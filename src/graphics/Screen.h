@@ -659,12 +659,10 @@ class Screen : public concurrency::OSThread
 
     static void drawSegmentedDisplayColon(OLEDDisplay *display, int x, int y, float scale = 1);
 
-    static void drawWatchFaceToggleButton(OLEDDisplay *display, int16_t x, int16_t y, bool digitalMode = true, float scale = 1);
+    static void drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, float scale = 1);
 
     static void drawBluetoothConnectedIcon(OLEDDisplay *display, int16_t x, int16_t y);
 
-    // Whether we are showing the digital watch face or the analog one
-    bool digitalWatchFace = true;
 #endif
 
     /// callback for current alert frame

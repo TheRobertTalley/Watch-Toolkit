@@ -586,38 +586,21 @@ static void drawBattery(OLEDDisplay *display, int16_t x, int16_t y, uint8_t *img
 
 #if defined(DISPLAY_CLOCK_FRAME)
 
-void Screen::drawWatchFaceToggleButton(OLEDDisplay *display, int16_t x, int16_t y, bool digitalMode, float scale)
+void Screen::drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, float scale)
 {
     uint16_t segmentWidth = SEGMENT_WIDTH * scale;
     uint16_t segmentHeight = SEGMENT_HEIGHT * scale;
+    uint16_t radius = (segmentWidth + (segmentHeight * 2) + 4) / 2;
+    uint16_t centerX = (x + segmentHeight + 2) + (radius / 2);
+    uint16_t centerY = (y + segmentHeight + 2) + (radius / 2);
 
-    if (digitalMode) {
-        uint16_t radius = (segmentWidth + (segmentHeight * 2) + 4) / 2;
-        uint16_t centerX = (x + segmentHeight + 2) + (radius / 2);
-        uint16_t centerY = (y + segmentHeight + 2) + (radius / 2);
+    display->drawCircle(centerX, centerY, radius);
+    display->drawCircle(centerX, centerY, radius - 1);
 
-        display->drawCircle(centerX, centerY, radius);
-        display->drawCircle(centerX, centerY, radius + 1);
-        display->drawLine(centerX, centerY, centerX, centerY - radius + 3);
-        display->drawLine(centerX, centerY, centerX + radius - 3, centerY);
-    } else {
-        uint16_t segmentOneX = x + segmentHeight + 2;
-        uint16_t segmentOneY = y;
-
-        uint16_t segmentTwoX = segmentOneX + segmentWidth + 2;
-        uint16_t segmentTwoY = segmentOneY + segmentHeight + 2;
-
-        uint16_t segmentThreeX = segmentOneX;
-        uint16_t segmentThreeY = segmentTwoY + segmentWidth + 2;
-
-        uint16_t segmentFourX = x;
-        uint16_t segmentFourY = y + segmentHeight + 2;
-
-        drawHorizontalSegment(display, segmentOneX, segmentOneY, segmentWidth, segmentHeight);
-        drawVerticalSegment(display, segmentTwoX, segmentTwoY, segmentWidth, segmentHeight);
-        drawHorizontalSegment(display, segmentThreeX, segmentThreeY, segmentWidth, segmentHeight);
-        drawVerticalSegment(display, segmentFourX, segmentFourY, segmentWidth, segmentHeight);
-    }
+    display->setFont(FONT_SMALL);
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
+    display->drawString(centerX, centerY - (FONT_HEIGHT_SMALL / 2), "%");
+    display->setTextAlignment(TEXT_ALIGN_LEFT);
 }
 
 // Draw a digital clock
@@ -639,7 +622,7 @@ void Screen::drawDigitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *sta
         drawBluetoothConnectedIcon(display, display->getWidth() - 18, y + 2);
     }
 
-    drawWatchFaceToggleButton(display, display->getWidth() - 36, display->getHeight() - 36, screen->digitalWatchFace, 1);
+    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, 1);
 
     display->setColor(OLEDDISPLAY_COLOR::WHITE);
 
@@ -922,7 +905,7 @@ void Screen::drawAnalogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *stat
         drawBluetoothConnectedIcon(display, display->getWidth() - 18, y + 2);
     }
 
-    drawWatchFaceToggleButton(display, display->getWidth() - 36, display->getHeight() - 36, screen->digitalWatchFace, 1);
+    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, 1);
 
     // clock face center coordinates
     int16_t centerX = display->getWidth() / 2;
@@ -2847,7 +2830,7 @@ void Screen::setFrames(FrameFocus focus)
     }
 
 #if defined(DISPLAY_CLOCK_FRAME)
-    normalFrames[numframes++] = screen->digitalWatchFace ? &Screen::drawDigitalClockFrame : &Screen::drawAnalogClockFrame;
+    normalFrames[numframes++] = &Screen::drawDigitalClockFrame;
 #endif
 
     // If we have a text message - show it next, unless it's a phone message and we aren't using any special modules
@@ -3946,14 +3929,12 @@ int Screen::handleInputEvent(const InputEvent *event)
     }
 
 #if defined(DISPLAY_CLOCK_FRAME)
-    // For the T-Watch, intercept touches to the 'toggle digital/analog watch face' button
+    // For the T-Watch, intercept touches to the battery meter button
     uint8_t watchFaceFrame = error_code ? 1 : 0;
 
     if (this->ui->getUiState()->currentFrame == watchFaceFrame && event->touchX >= 204 && event->touchX <= 240 &&
         event->touchY >= 204 && event->touchY <= 240) {
-        screen->digitalWatchFace = !screen->digitalWatchFace;
-
-        setFrames();
+        startBattMeterMode();
 
         updateSecretGestureProgress(event->inputEvent);
         return 0;
