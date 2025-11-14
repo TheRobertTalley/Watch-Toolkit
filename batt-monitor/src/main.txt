@@ -1,0 +1,526 @@
+/******************************************************
+ * main.cpp (OLED Display with Dangerously Low Voltage Warning
+ * and Button Functionality, plus HPA HPA Slow Drop)
+ ******************************************************/
+
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <painlessMesh.h>
+#include "json_handler.h"
+#include "mesh_integration.h"
+#include "mesh_config.h"
+#include <ArduinoJson.h>
+
+// --------------------------------------------------------------------
+// OLED Display Setup
+// --------------------------------------------------------------------
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET    -1   // Not used on XIAO
+#define SDA_PIN       9
+#define SCL_PIN       10
+
+// Create display object
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+bool hpaPsiConnected = false; // HPA module connected status
+
+// --------------------------------------------------------------------
+// Button Configuration
+// --------------------------------------------------------------------
+#define BUTTON_PIN              8     // Pin for toggle button
+#define BUTTON_DEBOUNCE_DELAY   50    // Debounce delay in ms
+#define BUTTON_LONG_PRESS_TIME  1000  // Long press threshold in ms
+
+bool displayState = true;              // OLED display on by default
+unsigned long lastButtonPress = 0;
+bool lastButtonState = HIGH;           // Track previous button state
+
+// For detecting long press
+unsigned long buttonPressStart = 0;
+bool buttonHeld = false;
+
+// --------------------------------------------------------------------
+// Display Modes
+// --------------------------------------------------------------------
+enum DisplayMode {
+  BATTERY_MODE,   // Shows Battery Voltage + Percentage
+  HPA_PSI_MODE    // Shows HPA (formerly PSI) + Percentage
+};
+
+DisplayMode currentDisplayMode = BATTERY_MODE;
+
+// --------------------------------------------------------------------
+// Timed Tasks Configuration
+// --------------------------------------------------------------------
+unsigned long lastDisplayUpdate = 0;
+const unsigned long displayUpdateInterval = 500;  // Screen refresh every 500 ms
+
+unsigned long lastBlinkTime = 0;
+const unsigned long blinkInterval = 500;          // Blinking interval (500 ms)
+bool blinkState = true;                           // Tracks blinking elements' visibility
+
+
+// Utility Function: mapFloat()
+// Similar to Arduino's map(), but for floating point numbers
+// --------------------------------------------------------------------
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+// --------------------------------------------------------------------
+// Battery Data and Connection Status
+// --------------------------------------------------------------------
+float batteryVoltage = 0.0;
+float batteryPercentage = 0.0;
+bool batteryConnected = false;
+
+// Tracks the last message received time & Timeout
+unsigned long lastMessageTime = 0;               
+const unsigned long messageTimeout = 13000;      // 13 seconds timeout
+
+// --------------------------------------------------------------------
+// HPA Data and Simulation
+// --------------------------------------------------------------------
+// We'll simulate an 8-hour drop from 3000 HPA down to 100 HPA.
+const float startHpaPsi = 3000.0f; 
+const float endHpaPsi   = 100.0f;
+float hpaPsi            = startHpaPsi; // Current simulated HPA value
+
+// 8 hours in milliseconds:
+const unsigned long totalHpaTime = 8UL * 3600UL * 1000UL; // 8 hours = 28,800,000 ms
+
+// We'll update the HPA level every 10 minutes:
+const unsigned long HPA_UPDATE_INTERVAL = 10UL * 60UL * 1000UL; // 600,000 ms
+
+// Number of 10-minute intervals in 8 hours:
+const unsigned long totalHpaIntervals = totalHpaTime / HPA_UPDATE_INTERVAL; // 28,800,000 / 600,000 = 48
+
+// The amount to drop each time we update (every 10 minutes):
+float psiDropPerInterval = 0.0f; 
+
+// We'll track the last time we updated the HPA value:
+unsigned long lastHpaPsiUpdate = 0;
+
+// --------------------------------------------------------------------
+// Forward Declarations
+// --------------------------------------------------------------------
+void receivedCallback(uint32_t from, String &msg);
+void updateDisplay();
+void handleButton();
+void timedTasks();
+void centerPrint(const String &text, int16_t y, uint8_t textSize);
+void drawConnectBatteryScreen();
+void drawDangerouslyLowScreen();
+void drawBatteryBarsAndText();
+void drawHpaPsiBarsAndText();
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
+
+// painlessMesh external functions
+extern void meshSetup();
+extern void meshLoop();
+
+// --------------------------------------------------------------------
+// Setup Function
+// --------------------------------------------------------------------
+void setup() {
+  // Initialize Serial for debugging
+  Serial.begin(115200);
+
+  // Initialize I2C communication
+  Wire.begin(SDA_PIN, SCL_PIN);
+
+  // Initialize OLED display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println(F("Failed to initialize OLED display"));
+    while (true); // Halt execution
+  }
+  display.clearDisplay();
+  display.display();
+
+  // Initialize button pin with internal pull-up resistor
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  // Setup mesh network
+  meshSetup();
+  mesh.onReceive(receivedCallback);
+
+  // Calculate the drop in HPA each time we do a 10-minute update
+  // (3000 - 100) / 48 = ~60.4167
+  psiDropPerInterval = (startHpaPsi - endHpaPsi) / (float)totalHpaIntervals;
+
+  Serial.print("Number of 10-minute intervals in 8h: ");
+  Serial.println(totalHpaIntervals);
+
+  Serial.print("PSI drop per 10-minute interval = ");
+  Serial.println(psiDropPerInterval, 5);
+}
+
+// --------------------------------------------------------------------
+// Main Loop Function
+// --------------------------------------------------------------------
+void loop() {
+  timedTasks();
+  meshLoop();
+}
+
+// --------------------------------------------------------------------
+// receivedCallback: Called whenever we receive a mesh message
+// --------------------------------------------------------------------
+void receivedCallback(uint32_t from, String &msg) {
+  StaticJsonDocument<512> jsonDoc;
+  DeserializationError error = deserializeJson(jsonDoc, msg);
+
+  if (!error) {
+    // Handle Battery Data
+    if (jsonDoc.containsKey("remote") &&
+        jsonDoc["remote"].containsKey("gunbatt") &&
+        jsonDoc["remote"]["gunbatt"].containsKey("voltage")) {
+
+      batteryVoltage = jsonDoc["remote"]["gunbatt"]["voltage"];
+      batteryConnected = true;            
+      lastMessageTime = millis();         
+
+      // Convert voltage to percentage
+      // Mapping: 2.7V -> 0%, 4.2V -> 100%
+      batteryPercentage = (batteryVoltage - 2.7f) / (4.2f - 2.7f) * 100.0f;
+      batteryPercentage = constrain(batteryPercentage, 0, 100);
+
+      Serial.print("Received Voltage: ");
+      Serial.print(batteryVoltage, 2);
+      Serial.print(" V, Battery Percentage: ");
+      Serial.print(batteryPercentage);
+      Serial.println(" %");
+    }
+
+    // Handle HPA Data (if real data is also incoming)
+    if (jsonDoc.containsKey("remote") &&
+        jsonDoc["remote"].containsKey("hpaPsi") &&
+        jsonDoc["remote"]["hpaPsi"].containsKey("value")) {
+
+      float receivedPsi = jsonDoc["remote"]["hpaPsi"]["value"];
+      hpaPsiConnected = true;
+
+      // If desired, you could override the simulation with actual data:
+      // hpaPsi = receivedPsi;
+
+      Serial.print("Received HPA: ");
+      Serial.print(receivedPsi, 2);
+      Serial.println(" (No override in simulation)");
+    }
+  } else {
+    Serial.print("Failed to parse JSON: ");
+    Serial.println(error.c_str());
+  }
+}
+
+// --------------------------------------------------------------------
+// timedTasks(): Called in loop() to handle button + display updates
+// and HPA simulation
+// --------------------------------------------------------------------
+void timedTasks() {
+  unsigned long currentMillis = millis();
+
+  // Handle button presses (short vs. long)
+  handleButton();
+
+  // Update HPA only every 10 minutes
+  if (currentMillis - lastHpaPsiUpdate >= HPA_UPDATE_INTERVAL) {
+    lastHpaPsiUpdate = currentMillis;
+
+    // Simulate drop from 3000 -> 100 over totalHpaIntervals times
+    if (hpaPsi > endHpaPsi) {
+      hpaPsi -= psiDropPerInterval;
+      if (hpaPsi < endHpaPsi) {
+        hpaPsi = endHpaPsi;
+      }
+      Serial.printf("Simulated HPA updated: %.1f\n", hpaPsi);
+    }
+  }
+
+  // Update the display (every 500 ms)
+  if (currentMillis - lastDisplayUpdate >= displayUpdateInterval) {
+    updateDisplay();
+    lastDisplayUpdate = currentMillis;
+  }
+
+  // Check for message timeout
+  if (batteryConnected && (currentMillis - lastMessageTime > messageTimeout)) {
+    batteryConnected = false;
+    Serial.println("Battery connection timeout. Please check the module.");
+  }
+}
+
+// --------------------------------------------------------------------
+// handleButton(): Handles short and long button presses
+// --------------------------------------------------------------------
+void handleButton() {
+  bool currentButtonState = digitalRead(BUTTON_PIN);
+
+  // Debounce
+  if (currentButtonState != lastButtonState) {
+    lastButtonPress = millis();
+  }
+
+  // If button is pressed (LOW)
+  if (currentButtonState == LOW) {
+    if (!buttonHeld) {
+      buttonPressStart = millis();
+      buttonHeld = true;
+    }
+
+    // Long press check
+    if (buttonHeld && (millis() - buttonPressStart >= BUTTON_LONG_PRESS_TIME)) {
+      buttonHeld = false;
+
+      // Toggle display mode (Battery <-> HPA)
+      if (currentDisplayMode == BATTERY_MODE) {
+        currentDisplayMode = HPA_PSI_MODE;
+        Serial.println("Switched to HPA Display Mode.");
+      } else {
+        currentDisplayMode = BATTERY_MODE;
+        Serial.println("Switched to Battery Display Mode.");
+      }
+    }
+  }
+  // If button is released
+  else {
+    if (buttonHeld) {
+      unsigned long pressDuration = millis() - buttonPressStart;
+      if (pressDuration < BUTTON_LONG_PRESS_TIME) {
+        // Short press => Toggle display ON/OFF if battery % > 10
+        if (batteryPercentage > 10.0) {
+          displayState = !displayState;
+          Serial.print("Display toggled: ");
+          Serial.println(displayState ? "ON" : "OFF");
+        } else {
+          Serial.println("Cannot turn off display. Battery is critically low.");
+        }
+      }
+      buttonHeld = false;
+    }
+  }
+
+  lastButtonState = currentButtonState;
+}
+
+// --------------------------------------------------------------------
+// updateDisplay(): Decides what to show on the OLED
+// --------------------------------------------------------------------
+void updateDisplay() {
+  // Handle blinking
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastBlinkTime >= blinkInterval) {
+    blinkState = !blinkState;
+    lastBlinkTime = currentMillis;
+  }
+
+  // Force display on if battery ≤ 10%
+  if (batteryPercentage <= 10.0f) {
+    if (!displayState) {
+      Serial.println("Battery ≤ 10%. Display forced ON.");
+    }
+    displayState = true;
+  }
+
+  if (!displayState) {
+    display.clearDisplay();
+    display.display();
+    return;
+  }
+
+  display.clearDisplay();
+
+  // 1) Check battery connection
+  if (!batteryConnected) {
+    drawConnectBatteryScreen();
+    return;
+  }
+
+  // 2) Dangerously low battery
+  if (batteryVoltage > 0.0f && batteryVoltage < 3.0f) {
+    drawDangerouslyLowScreen();
+    return;
+  }
+
+  // 3) Display mode
+  if (currentDisplayMode == BATTERY_MODE) {
+    drawBatteryBarsAndText();
+  } else {
+    drawHpaPsiBarsAndText();
+  }
+
+  display.display();
+}
+
+// --------------------------------------------------------------------
+// centerPrint(): Center text horizontally
+// --------------------------------------------------------------------
+void centerPrint(const String &text, int16_t y, uint8_t textSize) {
+  display.setTextSize(textSize);
+  display.setTextColor(SSD1306_WHITE);
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  int16_t x = (SCREEN_WIDTH - w) / 2;
+  display.setCursor(x, y);
+  display.println(text);
+}
+
+// --------------------------------------------------------------------
+// drawConnectBatteryScreen()
+// --------------------------------------------------------------------
+void drawConnectBatteryScreen() {
+  display.setTextSize(2);
+  display.setTextColor(SSD1306_WHITE);
+
+  display.drawRect(5, 5, SCREEN_WIDTH - 10, SCREEN_HEIGHT - 10, SSD1306_WHITE);
+  centerPrint("Connect", 15, 2);
+  centerPrint("Module", 35, 2);
+
+  display.display();
+}
+
+// --------------------------------------------------------------------
+// drawDangerouslyLowScreen()
+// --------------------------------------------------------------------
+void drawDangerouslyLowScreen() {
+  // 0% progress bar
+  display.drawRect(0, 0, SCREEN_WIDTH, 15, SSD1306_WHITE);
+  display.fillRect(0, 0, 0, 15, SSD1306_WHITE);
+
+  if (blinkState) {
+    display.fillRect(0, 0, SCREEN_WIDTH, 15, SSD1306_WHITE);
+    display.drawRect(0, 0, SCREEN_WIDTH, 15, SSD1306_BLACK);
+  } else {
+    display.drawRect(0, 0, SCREEN_WIDTH, 15, SSD1306_WHITE);
+  }
+
+  // Voltage
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+  String voltageText = String(batteryVoltage, 2) + "V";
+  int16_t voltageX = (SCREEN_WIDTH - (voltageText.length() * 6)) / 2;
+  int16_t voltageY = 4;
+  display.setCursor(voltageX, voltageY);
+  display.println(voltageText);
+
+  // Flash "0%" / "DANGER!!!"
+  display.setTextSize(4);
+  if (blinkState) {
+    display.setTextColor(SSD1306_WHITE);
+    String percentageText = "0%";
+    int16_t x_p, y_p;
+    uint16_t w_p, h_p;
+    display.getTextBounds(percentageText, 0, 0, &x_p, &y_p, &w_p, &h_p);
+    int16_t percentageX = (SCREEN_WIDTH - w_p) / 2;
+    int16_t percentageY = (15 + ((SCREEN_HEIGHT - 15) / 2)) - 12;
+    display.setCursor(percentageX, percentageY);
+    display.println(percentageText);
+  } else {
+    centerPrint("DANGER!!!", 30, 2);
+  }
+
+  display.display();
+}
+
+// --------------------------------------------------------------------
+// drawBatteryBarsAndText()
+// --------------------------------------------------------------------
+void drawBatteryBarsAndText() {
+  // Progress Bar
+  if (batteryPercentage < 10 && blinkState) {
+    display.fillRect(0, 0, SCREEN_WIDTH, 15, SSD1306_WHITE);
+    display.drawRect(0, 0, SCREEN_WIDTH, 15, SSD1306_BLACK);
+    int barWidth = map((int)batteryPercentage, 0, 100, 0, SCREEN_WIDTH);
+    display.fillRect(0, 0, barWidth, 15, SSD1306_BLACK);
+  } else {
+    display.drawRect(0, 0, SCREEN_WIDTH, 15, SSD1306_WHITE);
+    int barWidth = map((int)batteryPercentage, 0, 100, 0, SCREEN_WIDTH);
+    display.fillRect(0, 0, barWidth, 15, SSD1306_WHITE);
+  }
+
+  // Voltage inside progress bar (inverted color)
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+  String voltageText = String(batteryVoltage, 2) + "V";
+  int16_t x_v, y_v;
+  uint16_t w_v, h_v;
+  display.getTextBounds(voltageText, 0, 0, &x_v, &y_v, &w_v, &h_v);
+  int16_t voltageX = (SCREEN_WIDTH - w_v) / 2;
+  int16_t voltageY = (15 - h_v) / 2;
+  display.setCursor(voltageX, voltageY);
+  display.println(voltageText);
+
+  // Percentage below progress bar
+  display.setTextSize(4);
+  if (batteryPercentage < 10 && blinkState) {
+    display.setTextColor(SSD1306_BLACK, SSD1306_BLACK);
+  } else {
+    display.setTextColor(SSD1306_WHITE);
+  }
+
+  String percentageText = String((int)batteryPercentage) + "%";
+  int16_t x_p, y_p;
+  uint16_t w_p, h_p;
+  display.getTextBounds(percentageText, 0, 0, &x_p, &y_p, &w_p, &h_p);
+  int16_t percentageX = (SCREEN_WIDTH - w_p) / 2;
+  int16_t percentageY = (15 + ((SCREEN_HEIGHT - 15) / 2)) - 12;
+  display.setCursor(percentageX, percentageY);
+  display.println(percentageText);
+
+  display.display();
+}
+
+// --------------------------------------------------------------------
+// drawHpaPsiBarsAndText(): Slowly decreasing from 3000 -> 100 
+// with updates every 10 minutes
+// --------------------------------------------------------------------
+void drawHpaPsiBarsAndText() {
+  // Convert hpaPsi (range 100..3000) to progress bar 0..100
+  float normalizedHpa = mapFloat(hpaPsi, endHpaPsi, startHpaPsi, 0.0f, 100.0f);
+  normalizedHpa = constrain(normalizedHpa, 0.0f, 100.0f);
+
+  // Progress Bar
+  if (normalizedHpa < 10 && blinkState) {
+    display.fillRect(0, 0, SCREEN_WIDTH, 15, SSD1306_WHITE);
+    display.drawRect(0, 0, SCREEN_WIDTH, 15, SSD1306_BLACK);
+    int barWidth = map((int)normalizedHpa, 0, 100, 0, SCREEN_WIDTH);
+    display.fillRect(0, 0, barWidth, 15, SSD1306_BLACK);
+  } else {
+    display.drawRect(0, 0, SCREEN_WIDTH, 15, SSD1306_WHITE);
+    int barWidth = map((int)normalizedHpa, 0, 100, 0, SCREEN_WIDTH);
+    display.fillRect(0, 0, barWidth, 15, SSD1306_WHITE);
+  }
+
+  // HPA Display (Inside Progress Bar, Inverted Color)
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_BLACK, SSD1306_WHITE);
+
+  // Show actual hpaPsi, label as HPA
+  String hpaText = String(hpaPsi, 1) + " HPA";
+  int16_t x_hpa, y_hpa;
+  uint16_t w_hpa, h_hpa;
+  display.getTextBounds(hpaText, 0, 0, &x_hpa, &y_hpa, &w_hpa, &h_hpa);
+  int16_t hpaX = (SCREEN_WIDTH - w_hpa) / 2;
+  int16_t hpaY = 4;
+  display.setCursor(hpaX, hpaY);
+  display.println(hpaText);
+
+  // Battery Percentage Display (Centered Below Progress Bar)
+  display.setTextSize(3);
+  display.setTextColor(SSD1306_WHITE);
+  String percentageText = String((int)batteryPercentage) + "%";
+  int16_t x_p, y_p;
+  uint16_t w_p, h_p;
+  display.getTextBounds(percentageText, 0, 0, &x_p, &y_p, &w_p, &h_p);
+  int16_t percentageX = (SCREEN_WIDTH - w_p) / 2;
+  int16_t percentageY = (15 + ((SCREEN_HEIGHT - 15) / 2)) - 6;
+  display.setCursor(percentageX, percentageY);
+  display.println(percentageText);
+
+  display.display();
+}
+
