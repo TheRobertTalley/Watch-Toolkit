@@ -595,9 +595,6 @@ void Screen::drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, 
     uint16_t centerX = (x + segmentHeight + 2) + (radius / 2);
     uint16_t centerY = (y + segmentHeight + 2) + (radius / 2);
 
-    display->drawCircle(centerX, centerY, radius);
-    display->drawCircle(centerX, centerY, radius - 1);
-
     display->setFont(FONT_SMALL);
     display->setTextAlignment(TEXT_ALIGN_CENTER);
     if (mode == LowerRightButtonMode::BatteryPercent) {
