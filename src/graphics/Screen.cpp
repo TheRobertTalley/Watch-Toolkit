@@ -826,6 +826,7 @@ void Screen::drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state,
                            LowerRightButtonMode::DigitalClock, 0, 1);
 
     display->setFont(FONT_SMALL);
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
 
     int percent = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastPercent() : -1;
     float voltage = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastVoltage() : 0.0f;
@@ -864,6 +865,7 @@ void Screen::drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state,
     display->drawString(drawX + 8, drawY + segmentHeight * 2, "%");
 
     display->setFont(FONT_SMALL);
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
     char statusLine[48];
     snprintf(statusLine, sizeof(statusLine), "%.2f V   Updated %lus ago", voltage,
              (millis() - battMeterClient->getLastUpdateMs()) / 1000);
