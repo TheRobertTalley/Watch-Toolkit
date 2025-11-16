@@ -120,15 +120,19 @@ std::string functionSymbolString = "";
 #if HAS_SCREEN
 namespace
 {
+enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, BatteryMeter, Count };
 static const char *const secretMenuItems[] = {
+    "TV B Gone",
     "WiFi Attacks",
     "WiFi Scanner",
     "Station Browser",
-    "TV B Gone",
     "Battery Meter"};
-constexpr size_t secretMenuItemCount = sizeof(secretMenuItems) / sizeof(secretMenuItems[0]);
-constexpr size_t tvBGoneMenuIndex = 3;
-constexpr size_t batteryMenuIndex = secretMenuItemCount - 1;
+constexpr size_t secretMenuItemCount = static_cast<size_t>(SecretMenuEntry::Count);
+constexpr size_t tvBGoneMenuIndex = static_cast<size_t>(SecretMenuEntry::TvBGone);
+constexpr size_t wifiAttacksMenuIndex = static_cast<size_t>(SecretMenuEntry::WifiAttacks);
+constexpr size_t wifiScannerMenuIndex = static_cast<size_t>(SecretMenuEntry::WifiScanner);
+constexpr size_t stationBrowserMenuIndex = static_cast<size_t>(SecretMenuEntry::StationBrowser);
+constexpr size_t batteryMenuIndex = static_cast<size_t>(SecretMenuEntry::BatteryMeter);
 constexpr size_t secretMenuAnchorIndex = batteryMenuIndex; // keep anchor aligned with old battery/device location
 
 constexpr size_t wifiAttackItemCount = marauder::kWifiAttackItemCount;
@@ -3565,26 +3569,26 @@ void Screen::hideSecretMenu()
 void Screen::handleSecretMenuSelection()
 {
     if (secretMenuMode == SecretMenuMode::Root) {
-        if (secretMenuSelection == 0) {
-            secretMenuMode = SecretMenuMode::WifiAttacks;
-            wifiAttackSelection = 0;
-            setFastFramerate();
-            setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == 1) {
-            secretMenuMode = SecretMenuMode::WifiScanner;
-            wifiScanSelection = 0;
-            startWifiScanList();
-            setFastFramerate();
-            setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == 2) {
-            showStationBrowser();
-        } else if (secretMenuSelection == tvBGoneMenuIndex) {
+        if (secretMenuSelection == tvBGoneMenuIndex) {
             if (tvBGone && tvBGone->isActive()) {
                 stopTvBGoneTool();
             } else {
                 startTvBGoneTool();
                 hideSecretMenu();
             }
+        } else if (secretMenuSelection == wifiAttacksMenuIndex) {
+            secretMenuMode = SecretMenuMode::WifiAttacks;
+            wifiAttackSelection = 0;
+            setFastFramerate();
+            setFrames(FOCUS_SECRET);
+        } else if (secretMenuSelection == wifiScannerMenuIndex) {
+            secretMenuMode = SecretMenuMode::WifiScanner;
+            wifiScanSelection = 0;
+            startWifiScanList();
+            setFastFramerate();
+            setFrames(FOCUS_SECRET);
+        } else if (secretMenuSelection == stationBrowserMenuIndex) {
+            showStationBrowser();
         } else if (secretMenuSelection == batteryMenuIndex) {
             startBattMeterMode();
             hideSecretMenu();
