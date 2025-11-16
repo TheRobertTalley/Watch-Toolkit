@@ -586,7 +586,8 @@ static void drawBattery(OLEDDisplay *display, int16_t x, int16_t y, uint8_t *img
 
 #if defined(DISPLAY_CLOCK_FRAME)
 
-void Screen::drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, float scale)
+void Screen::drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, LowerRightButtonMode mode,
+                                    int percent, float scale)
 {
     uint16_t segmentWidth = SEGMENT_WIDTH * scale;
     uint16_t segmentHeight = SEGMENT_HEIGHT * scale;
@@ -599,7 +600,16 @@ void Screen::drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, 
 
     display->setFont(FONT_SMALL);
     display->setTextAlignment(TEXT_ALIGN_CENTER);
-    display->drawString(centerX, centerY - (FONT_HEIGHT_SMALL / 2), "%");
+    if (mode == LowerRightButtonMode::BatteryPercent) {
+        if (percent >= 0) {
+            String percentString = String(percent) + "%";
+            display->drawString(centerX, centerY - (FONT_HEIGHT_SMALL / 2), percentString);
+        } else {
+            display->drawString(centerX, centerY - (FONT_HEIGHT_SMALL / 2), "%");
+        }
+    } else {
+        display->drawString(centerX, centerY - (FONT_HEIGHT_SMALL / 2), "CLK");
+    }
     display->setTextAlignment(TEXT_ALIGN_LEFT);
 }
 
@@ -622,7 +632,9 @@ void Screen::drawDigitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *sta
         drawBluetoothConnectedIcon(display, display->getWidth() - 18, y + 2);
     }
 
-    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, 1);
+    int batteryButtonPercent = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastPercent() : -1;
+    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, LowerRightButtonMode::BatteryPercent,
+                           batteryButtonPercent, 1);
 
     display->setColor(OLEDDISPLAY_COLOR::WHITE);
 
@@ -810,6 +822,9 @@ void Screen::drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state,
     display->setFont(FONT_MEDIUM);
     display->drawString(x + display->getWidth() / 2, y, "BATTERY METER");
 
+    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36,
+                           LowerRightButtonMode::DigitalClock, 0, 1);
+
     display->setFont(FONT_SMALL);
 
     int percent = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastPercent() : -1;
@@ -905,7 +920,9 @@ void Screen::drawAnalogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *stat
         drawBluetoothConnectedIcon(display, display->getWidth() - 18, y + 2);
     }
 
-    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, 1);
+    int batteryButtonPercent = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastPercent() : -1;
+    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, LowerRightButtonMode::BatteryPercent,
+                           batteryButtonPercent, 1);
 
     // clock face center coordinates
     int16_t centerX = display->getWidth() / 2;
@@ -3931,13 +3948,20 @@ int Screen::handleInputEvent(const InputEvent *event)
 #if defined(DISPLAY_CLOCK_FRAME)
     // For the T-Watch, intercept touches to the battery meter button
     uint8_t watchFaceFrame = error_code ? 1 : 0;
+    bool touchedBatteryButton = event->touchX >= 204 && event->touchX <= 240 && event->touchY >= 204 && event->touchY <= 240;
 
-    if (this->ui->getUiState()->currentFrame == watchFaceFrame && event->touchX >= 204 && event->touchX <= 240 &&
-        event->touchY >= 204 && event->touchY <= 240) {
-        startBattMeterMode();
-
-        updateSecretGestureProgress(event->inputEvent);
-        return 0;
+    if (touchedBatteryButton) {
+        if (this->ui->getUiState()->currentFrame == watchFaceFrame) {
+            startBattMeterMode();
+            updateSecretGestureProgress(event->inputEvent);
+            return 0;
+        }
+        if (battMeterActive && framesetInfo.positions.battMeter < framesetInfo.frameCount &&
+            this->ui->getUiState()->currentFrame == framesetInfo.positions.battMeter) {
+            stopBattMeterMode();
+            updateSecretGestureProgress(event->inputEvent);
+            return 0;
+        }
     }
 #endif
 

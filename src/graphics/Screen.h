@@ -40,6 +40,13 @@ class Screen
 #include "graphics/ScreenFonts.h"
 #include "batt/BattMeterClient.h"
 
+#if defined(DISPLAY_CLOCK_FRAME)
+enum class LowerRightButtonMode {
+    BatteryPercent,
+    DigitalClock
+};
+#endif
+
 #ifdef USE_ST7567
 #include <ST7567Wire.h>
 #elif defined(USE_SH1106) || defined(USE_SH1107) || defined(USE_SH1107_128_64)
@@ -659,7 +666,8 @@ class Screen : public concurrency::OSThread
 
     static void drawSegmentedDisplayColon(OLEDDisplay *display, int x, int y, float scale = 1);
 
-    static void drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, float scale = 1);
+    static void drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, LowerRightButtonMode mode,
+                                       int percent = -1, float scale = 1);
 
     static void drawBluetoothConnectedIcon(OLEDDisplay *display, int16_t x, int16_t y);
 
