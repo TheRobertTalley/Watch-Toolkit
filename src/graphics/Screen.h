@@ -700,6 +700,8 @@ class Screen : public concurrency::OSThread
       void showStationBrowser();
       void startBattMeterMode();
       void stopBattMeterMode();
+      void startTvBGoneTool();
+      void stopTvBGoneTool();
 
       uint8_t secretMenuSelection = 0;
       bool secretMenuVisible = false;

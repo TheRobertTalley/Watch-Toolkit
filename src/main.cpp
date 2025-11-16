@@ -117,6 +117,7 @@ AudioThread *audioThread = nullptr;
 #endif
 
 #include "batt/BattMeterClient.h"
+#include "ir/TVBGone.h"
 #ifdef USE_PCA9557
 PCA9557 IOEXP;
 #endif
@@ -869,6 +870,9 @@ void setup()
     notificationManager = new NotificationManager();
 #if HAS_WIFI
     battMeterClient = new BattMeterClient();
+#endif
+#if defined(ARDUINO_ARCH_ESP32)
+    tvBGone = new TvBGone();
 #endif
 #endif
     // setup TZ prior to time actions.

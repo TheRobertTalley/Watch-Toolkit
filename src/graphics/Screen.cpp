@@ -43,6 +43,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "graphics/SecretMenuImage.h"
 #include "marauder/StationTracker.h"
 #include "marauder/WifiAttackController.h"
+#include "ir/TVBGone.h"
 #if HAS_TFT
 #include "graphics/TFTDisplay.h"
 #endif
@@ -123,13 +124,24 @@ static const char *const secretMenuItems[] = {
     "WiFi Attacks",
     "WiFi Scanner",
     "Station Browser",
+    "TV B Gone",
     "Battery Meter"};
 constexpr size_t secretMenuItemCount = sizeof(secretMenuItems) / sizeof(secretMenuItems[0]);
+constexpr size_t tvBGoneMenuIndex = 3;
 constexpr size_t batteryMenuIndex = secretMenuItemCount - 1;
 constexpr size_t secretMenuAnchorIndex = batteryMenuIndex; // keep anchor aligned with old battery/device location
 
 constexpr size_t wifiAttackItemCount = marauder::kWifiAttackItemCount;
 constexpr size_t wifiAttackVisibleCount = 6;
+
+static std::string secretMenuItemLabel(size_t index)
+{
+    std::string label = secretMenuItems[index];
+    if (tvBGone && index == tvBGoneMenuIndex && tvBGone->isActive()) {
+        label = "*" + label + "*";
+    }
+    return label;
+}
 
 // TouchScreenImpl1 maps physical swipes horizontally inverted (swipe left -> InputEventChar_RIGHT).
 // Adjust the gesture sequence to match the physical pattern: up, down, left, right, right, left, down, up.
@@ -2547,11 +2559,11 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
         tftDisplay->drawColorString(x + width / 2 - 30, y, "Toolkit", secretMenuHeaderColor);
 
         display->setFont(FONT_SMALL);
-        const char *currentItem = secretMenuItems[self->secretMenuSelection];
+        std::string currentLabel = secretMenuItemLabel(self->secretMenuSelection);
         int16_t versionY = y + height - (FONT_HEIGHT_SMALL + 19);
         int16_t selectionY = versionY - (FONT_HEIGHT_SMALL + 10);
-        int16_t centeredX = x + (width - display->getStringWidth(currentItem)) / 2;
-        tftDisplay->drawColorString(centeredX, selectionY, currentItem, secretMenuTextColor);
+        int16_t centeredX = x + (width - display->getStringWidth(currentLabel.c_str())) / 2;
+        tftDisplay->drawColorString(centeredX, selectionY, currentLabel.c_str(), secretMenuTextColor);
 
         int16_t targetX = x + (width - display->getStringWidth(targetLine.c_str())) / 2;
         tftDisplay->drawColorString(targetX,
@@ -2688,10 +2700,10 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
     display->drawString(x + display->getWidth() / 2, y, "Toolkit");
 
     display->setFont(FONT_SMALL);
-    const char *currentItem = secretMenuItems[self->secretMenuSelection];
+    std::string currentLabel = secretMenuItemLabel(self->secretMenuSelection);
     int16_t versionY = y + display->getHeight() - (FONT_HEIGHT_SMALL + 19);
     int16_t selectionY = versionY - (FONT_HEIGHT_SMALL + 10);
-    display->drawString(x + display->getWidth() / 2, selectionY, currentItem);
+    display->drawString(x + display->getWidth() / 2, selectionY, currentLabel.c_str());
 
     display->setFont(FONT_SMALL);
     display->setTextAlignment(TEXT_ALIGN_CENTER);
@@ -3566,6 +3578,13 @@ void Screen::handleSecretMenuSelection()
             setFrames(FOCUS_SECRET);
         } else if (secretMenuSelection == 2) {
             showStationBrowser();
+        } else if (secretMenuSelection == tvBGoneMenuIndex) {
+            if (tvBGone && tvBGone->isActive()) {
+                stopTvBGoneTool();
+            } else {
+                startTvBGoneTool();
+                hideSecretMenu();
+            }
         } else if (secretMenuSelection == batteryMenuIndex) {
             startBattMeterMode();
             hideSecretMenu();
@@ -3667,6 +3686,22 @@ void Screen::stopBattMeterMode()
     if (battMeterClient && battMeterClient->isActive())
         battMeterClient->stop();
     setFrames(FOCUS_PRESERVE);
+}
+
+void Screen::startTvBGoneTool()
+{
+#if defined(ARDUINO_ARCH_ESP32)
+    if (tvBGone)
+        tvBGone->start();
+#endif
+}
+
+void Screen::stopTvBGoneTool()
+{
+#if defined(ARDUINO_ARCH_ESP32)
+    if (tvBGone)
+        tvBGone->stop();
+#endif
 }
 
 bool Screen::handleSecretMenuInput(char inputEvent)
