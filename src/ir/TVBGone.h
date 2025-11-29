@@ -18,7 +18,7 @@ class TvBGone : public concurrency::OSThread {
 
   private:
     static constexpr uint8_t kIrChannel = 0;
-    static constexpr uint8_t kIrPin = 16;
+    static constexpr uint8_t kIrPin = 2;
     static constexpr uint8_t kCarrierDutyHigh = 192;
     static constexpr unsigned kCarrierResolution = 8;
 
