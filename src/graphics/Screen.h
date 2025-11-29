@@ -702,6 +702,11 @@ class Screen : public concurrency::OSThread
       void stopBattMeterMode();
       void startTvBGoneTool();
       void stopTvBGoneTool();
+      bool ensureStingrayMeshReady(bool longRange);
+      bool sendDetonateCommand();
+      void enterDetonateMode();
+      void exitDetonateMode();
+      void updateDetonateStatus();
 
       uint8_t secretMenuSelection = 0;
       bool secretMenuVisible = false;
@@ -712,12 +717,17 @@ class Screen : public concurrency::OSThread
           WifiAttacks,
           WifiScanner,
           StationAps,
-          StationStations
+          StationStations,
+          Detonate
       };
       SecretMenuMode secretMenuMode = SecretMenuMode::Root;
       uint8_t wifiAttackSelection = 0;
     uint32_t secretGestureStartMs = 0;
     bool battMeterActive = false;
+    bool detonateModeActive = false;
+    bool battNetworkWasActive = false;
+    bool detonateConnected = false;
+    std::string detonateStatus = "Tap detonate to broadcast";
 
     bool hasCompass = false;
     float compassHeading;

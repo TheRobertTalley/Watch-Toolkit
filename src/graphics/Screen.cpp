@@ -120,18 +120,20 @@ std::string functionSymbolString = "";
 #if HAS_SCREEN
 namespace
 {
-enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, BatteryMeter, Count };
+enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, Detonate, BatteryMeter, Count };
 static const char *const secretMenuItems[] = {
     "TV B Gone",
     "WiFi Attacks",
     "WiFi Scanner",
     "Station Browser",
+    "Detonate",
     "Battery Meter"};
 constexpr size_t secretMenuItemCount = static_cast<size_t>(SecretMenuEntry::Count);
 constexpr size_t tvBGoneMenuIndex = static_cast<size_t>(SecretMenuEntry::TvBGone);
 constexpr size_t wifiAttacksMenuIndex = static_cast<size_t>(SecretMenuEntry::WifiAttacks);
 constexpr size_t wifiScannerMenuIndex = static_cast<size_t>(SecretMenuEntry::WifiScanner);
 constexpr size_t stationBrowserMenuIndex = static_cast<size_t>(SecretMenuEntry::StationBrowser);
+constexpr size_t detonateMenuIndex = static_cast<size_t>(SecretMenuEntry::Detonate);
 constexpr size_t batteryMenuIndex = static_cast<size_t>(SecretMenuEntry::BatteryMeter);
 constexpr size_t secretMenuAnchorIndex = batteryMenuIndex; // keep anchor aligned with old battery/device location
 
@@ -2240,7 +2242,67 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
     const char *scannerInstructionText = "Tap=Rescan  Left=Back";
     const char *stationApInstructionText = "Tap=Open  Left=Back";
     const char *stationStaInstructionText = "Right=Target  Left=Back";
+    const char *detonateInstructionText = "Tap=Detonate  Left=Back";
+    if (self->detonateModeActive)
+        self->updateDetonateStatus();
     const std::string targetLine = secretMenuTargetString();
+    const bool connected = self->detonateConnected;
+
+    if (self->secretMenuMode == SecretMenuMode::Detonate) {
+#if HAS_TFT
+        if (auto *tftDisplay = dynamic_cast<TFTDisplay *>(self->dispdev)) {
+            int16_t width = display->getWidth();
+            int16_t height = display->getHeight();
+            tftDisplay->fillRectColor(x, y, width, height, TFT_BLACK);
+            tftDisplay->setTextAlignment(TEXT_ALIGN_CENTER);
+            tftDisplay->drawColorString(x + width / 2, y, "DANGER!!!", secretMenuHeaderColor);
+
+            int16_t buttonHeight = (height / 3) * 2; // 2x taller
+            int16_t buttonY = y + (height - buttonHeight) / 2;
+            const uint16_t buttonColor = connected ? secretMenuHeaderColor : TFT_BLACK;
+            const uint16_t labelColor = connected ? TFT_BLACK : secretMenuAccentColor;
+            tftDisplay->fillRectColor(x + 10, buttonY, width - 20, buttonHeight, buttonColor);
+            if (!connected) {
+                tftDisplay->drawRect(x + 10, buttonY, width - 20, buttonHeight, secretMenuAccentColor);
+            }
+            tftDisplay->drawColorString(x + width / 2,
+                                        buttonY + buttonHeight / 2 - (FONT_HEIGHT_MEDIUM / 2),
+                                        "DETONATE",
+                                        labelColor);
+            tftDisplay->drawColorString(x + width / 2, y + height - (FONT_HEIGHT_SMALL + 2), detonateInstructionText,
+                                        secretMenuHeaderColor);
+            tftDisplay->drawColorString(x + width / 2, buttonY + buttonHeight + FONT_HEIGHT_SMALL,
+                                        self->detonateStatus.c_str(), secretMenuTextColor);
+            return;
+        }
+#endif
+        int16_t buttonWidth = display->getWidth() - 30;
+        int16_t buttonX = x + (display->getWidth() - buttonWidth) / 2;
+        int16_t buttonHeight = (display->getHeight() / 4) * 2;
+        int16_t buttonY = y + (display->getHeight() - buttonHeight) / 2;
+        display->setColor(connected ? WHITE : BLACK);
+        display->fillRect(buttonX, buttonY, buttonWidth, buttonHeight);
+        if (!connected) {
+            display->setColor(WHITE);
+            display->drawRect(buttonX, buttonY, buttonWidth, buttonHeight);
+        }
+        display->setTextAlignment(TEXT_ALIGN_CENTER);
+        display->setFont(FONT_MEDIUM);
+        display->drawString(x + display->getWidth() / 2, y, "DANGER!!!");
+        display->setFont(FONT_SMALL);
+        display->drawString(x + display->getWidth() / 2,
+                            buttonY + (buttonHeight / 2) - (FONT_HEIGHT_SMALL / 2),
+                            "DETONATE");
+        display->drawString(x + display->getWidth() / 2,
+                            y + display->getHeight() - (FONT_HEIGHT_SMALL + 2),
+                            detonateInstructionText);
+        display->setTextAlignment(TEXT_ALIGN_LEFT);
+        display->drawString(x + 2,
+                            buttonY + buttonHeight + FONT_HEIGHT_SMALL + 4,
+                            self->detonateStatus.c_str());
+        display->setTextAlignment(TEXT_ALIGN_CENTER);
+        return;
+    }
 
     bool attackRunning = false;
     size_t runningIndex = wifiAttackItemCount;
@@ -3554,6 +3616,8 @@ void Screen::hideSecretMenu()
     if (!secretMenuVisible)
         return;
     secretMenuVisible = false;
+    if (secretMenuMode == SecretMenuMode::Detonate)
+        exitDetonateMode();
     secretMenuMode = SecretMenuMode::Root;
     wifiAttackSelection = 0;
     wifiScanInProgress = false;
@@ -3585,6 +3649,10 @@ void Screen::handleSecretMenuSelection()
             secretMenuMode = SecretMenuMode::WifiScanner;
             wifiScanSelection = 0;
             startWifiScanList();
+            setFastFramerate();
+            setFrames(FOCUS_SECRET);
+        } else if (secretMenuSelection == detonateMenuIndex) {
+            enterDetonateMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
         } else if (secretMenuSelection == stationBrowserMenuIndex) {
@@ -3690,6 +3758,89 @@ void Screen::stopBattMeterMode()
     if (battMeterClient && battMeterClient->isActive())
         battMeterClient->stop();
     setFrames(FOCUS_PRESERVE);
+}
+
+bool Screen::ensureStingrayMeshReady(bool longRange)
+{
+#if HAS_WIFI
+    if (!battMeterClient)
+        return false;
+    if (!battMeterClient->isActive() || battMeterClient->isMeshReady() == false)
+        battMeterClient->start(longRange);
+    return battMeterClient->isMeshReady();
+#else
+    (void)longRange;
+    return false;
+#endif
+}
+
+void Screen::enterDetonateMode()
+{
+#if HAS_WIFI
+    if (detonateModeActive)
+        return;
+    detonateModeActive = true;
+    if (battMeterActive) {
+        battNetworkWasActive = true;
+        stopBattMeterMode();
+    } else {
+        battNetworkWasActive = false;
+    }
+    detonateConnected = false;
+    detonateStatus = "Starting claymore link...";
+    if (!ensureStingrayMeshReady(true)) {
+        detonateStatus = "WiFi not available";
+        detonateModeActive = false;
+        return;
+    }
+    secretMenuMode = SecretMenuMode::Detonate;
+#else
+    detonateStatus = "WiFi unavailable";
+    secretMenuMode = SecretMenuMode::Detonate;
+#endif
+}
+
+void Screen::exitDetonateMode()
+{
+#if HAS_WIFI
+    detonateModeActive = false;
+    detonateConnected = false;
+    detonateStatus = "Tap detonate to broadcast";
+    if (battMeterClient && battMeterClient->isActive())
+        battMeterClient->stop();
+    if (battNetworkWasActive)
+        startBattMeterMode();
+#endif
+    secretMenuMode = SecretMenuMode::Root;
+}
+
+void Screen::updateDetonateStatus()
+{
+#if HAS_WIFI
+    if (!detonateModeActive || !battMeterClient)
+        return;
+    detonateConnected = battMeterClient->hasMeshPeers();
+    if (detonateConnected)
+        detonateStatus = "Claymore connected";
+    else
+        detonateStatus = "Searching for claymore...";
+#endif
+}
+
+bool Screen::sendDetonateCommand()
+{
+#if HAS_WIFI
+    if (!ensureStingrayMeshReady(true)) {
+        detonateStatus = "Not connected to claymore";
+        return false;
+    }
+    bool sent = battMeterClient->sendMeshCommand("DETONATE", "detonate");
+    detonateStatus = sent ? "Detonate command sent" : "Failed to send detonate";
+    return sent;
+#else
+    detonateStatus = "WiFi not available";
+    return false;
+#endif
 }
 
 void Screen::startTvBGoneTool()
@@ -3893,6 +4044,24 @@ bool Screen::handleSecretMenuInput(char inputEvent)
 #endif
     };
 
+    auto handleDetonateNav = [this](char inputEvent) -> bool {
+        switch (inputEvent) {
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_SELECT):
+            sendDetonateCommand();
+            setFastFramerate();
+            return true;
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL):
+            exitDetonateMode();
+            setFastFramerate();
+            setFrames(FOCUS_SECRET);
+            return true;
+        default:
+            return true;
+        }
+    };
+
     if (secretMenuMode == SecretMenuMode::WifiAttacks)
         return handleWifiAttackNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::WifiScanner)
@@ -3901,6 +4070,8 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         return handleStationApNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::StationStations)
         return handleStationStaNav(inputEvent);
+    if (secretMenuMode == SecretMenuMode::Detonate)
+        return handleDetonateNav(inputEvent);
 
     switch (inputEvent) {
     case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_UP):
@@ -4046,7 +4217,3 @@ int Screen::handleAdminMessage(const meshtastic_AdminMessage *arg)
 #else
 graphics::Screen::Screen(ScanI2C::DeviceAddress, meshtastic_Config_DisplayConfig_OledType, OLEDDISPLAY_GEOMETRY) {}
 #endif // HAS_SCREEN
-
-
-
-
