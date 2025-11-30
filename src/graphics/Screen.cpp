@@ -1626,21 +1626,30 @@ uint16_t Screen::getCompassDiam(uint32_t displayWidth, uint32_t displayHeight)
 
 static void drawNodeInfo(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
-    // We only advance our nodeIndex if the frame # has changed - because
-    // drawNodeInfo will be called repeatedly while the frame is shown
-    if (state->currentFrame != prevFrame) {
-        prevFrame = state->currentFrame;
+    // Always show the last-heard node (excluding ourselves), rather than
+    // cycling through all nodes. This keeps the compass focused on the most
+    // relevant neighbor.
+    meshtastic_NodeInfoLite *node = nullptr;
+    uint32_t bestSinceLastSeen = UINT32_MAX;
 
-        nodeIndex = (nodeIndex + 1) % nodeDB->getNumMeshNodes();
-        meshtastic_NodeInfoLite *n = nodeDB->getMeshNodeByIndex(nodeIndex);
-        if (n->num == nodeDB->getNodeNum()) {
-            // Don't show our node, just skip to next
-            nodeIndex = (nodeIndex + 1) % nodeDB->getNumMeshNodes();
-            n = nodeDB->getMeshNodeByIndex(nodeIndex);
+    uint32_t ourNum = nodeDB->getNodeNum();
+    uint32_t numNodes = nodeDB->getNumMeshNodes();
+    for (uint32_t i = 0; i < numNodes; ++i) {
+        meshtastic_NodeInfoLite *candidate = nodeDB->getMeshNodeByIndex(i);
+        if (!candidate)
+            continue;
+        if (candidate->num == ourNum)
+            continue; // never show ourselves
+
+        uint32_t ageSecs = sinceLastSeen(candidate);
+        if (ageSecs < bestSinceLastSeen) {
+            bestSinceLastSeen = ageSecs;
+            node = candidate;
         }
     }
 
-    meshtastic_NodeInfoLite *node = nodeDB->getMeshNodeByIndex(nodeIndex);
+    if (!node)
+        return;
 
     display->setFont(FONT_SMALL);
 
@@ -1673,6 +1682,13 @@ static void drawNodeInfo(OLEDDisplay *display, OLEDDisplayUiState *state, int16_
     }
     meshtastic_NodeInfoLite *ourNode = nodeDB->getMeshNode(nodeDB->getNodeNum());
     const char *fields[] = {username, lastStr, signalStr, distStr, NULL};
+
+    // Mark this frame as showing the most recently heard node.
+    display->setFont(FONT_SMALL);
+    display->setTextAlignment(TEXT_ALIGN_LEFT);
+    display->drawString(x, y, "LAST HEARD");
+    y += FONT_HEIGHT_SMALL + 2; // move subsequent lines down so they don't overlap the label
+
     int16_t compassX = 0, compassY = 0;
     uint16_t compassDiam = Screen::getCompassDiam(SCREEN_WIDTH, SCREEN_HEIGHT);
 
@@ -2300,9 +2316,12 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
         display->setFont(FONT_MEDIUM);
         display->drawString(x + display->getWidth() / 2, y, "DANGER!!!");
         display->setFont(FONT_SMALL);
+        const char *buttonLabel = connected ? "ARMED" : "DETONATE";
+        display->setColor(connected ? BLACK : WHITE);
         display->drawString(x + display->getWidth() / 2,
                             buttonY + (buttonHeight / 2) - (FONT_HEIGHT_SMALL / 2),
-                            "DETONATE");
+                            buttonLabel);
+        display->setColor(WHITE);
         display->drawString(x + display->getWidth() / 2,
                             y + display->getHeight() - (FONT_HEIGHT_SMALL + 2),
                             detonateInstructionText);
@@ -3000,10 +3019,9 @@ void Screen::setFrames(FrameFocus focus)
         normalFrames[numframes++] = drawTextMessageFrame;
     }
 
-    // then all the nodes
-    // We only show a few nodes in our scrolling list - because meshes with many nodes would have too many screens
-    size_t numToShow = min(numMeshNodes, 4U);
-    for (size_t i = 0; i < numToShow; i++)
+    // then the node info / compass screen
+    // Only show a single node info frame to avoid having a ton of nearly-identical screens.
+    if (numMeshNodes > 0)
         normalFrames[numframes++] = drawNodeInfo;
 
     // then the debug info
