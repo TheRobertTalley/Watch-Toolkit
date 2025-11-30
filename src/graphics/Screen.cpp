@@ -3837,89 +3837,6 @@ void Screen::stopBattMeterMode()
     setFrames(FOCUS_PRESERVE);
 }
 
-bool Screen::ensureStingrayMeshReady(bool longRange)
-{
-#if HAS_WIFI
-    if (!battMeterClient)
-        return false;
-    if (!battMeterClient->isActive() || battMeterClient->isMeshReady() == false)
-        battMeterClient->start(longRange);
-    return battMeterClient->isMeshReady();
-#else
-    (void)longRange;
-    return false;
-#endif
-}
-
-void Screen::enterDetonateMode()
-{
-#if HAS_WIFI
-    if (detonateModeActive)
-        return;
-    detonateModeActive = true;
-    if (battMeterActive) {
-        battNetworkWasActive = true;
-        stopBattMeterMode();
-    } else {
-        battNetworkWasActive = false;
-    }
-    detonateConnected = false;
-    detonateStatus = "Starting claymore link...";
-    if (!ensureStingrayMeshReady(true)) {
-        detonateStatus = "WiFi not available";
-        detonateModeActive = false;
-        return;
-    }
-    secretMenuMode = SecretMenuMode::Detonate;
-#else
-    detonateStatus = "WiFi unavailable";
-    secretMenuMode = SecretMenuMode::Detonate;
-#endif
-}
-
-void Screen::exitDetonateMode()
-{
-#if HAS_WIFI
-    detonateModeActive = false;
-    detonateConnected = false;
-    detonateStatus = "Tap detonate to broadcast";
-    if (battMeterClient && battMeterClient->isActive())
-        battMeterClient->stop();
-    if (battNetworkWasActive)
-        startBattMeterMode();
-#endif
-    secretMenuMode = SecretMenuMode::Root;
-}
-
-void Screen::updateDetonateStatus()
-{
-#if HAS_WIFI
-    if (!detonateModeActive || !battMeterClient)
-        return;
-    detonateConnected = battMeterClient->hasMeshPeers();
-    if (detonateConnected)
-        detonateStatus = "Claymore connected";
-    else
-        detonateStatus = "Searching for claymore...";
-#endif
-}
-
-bool Screen::sendDetonateCommand()
-{
-#if HAS_WIFI
-    if (!ensureStingrayMeshReady(true)) {
-        detonateStatus = "Not connected to claymore";
-        return false;
-    }
-    bool sent = battMeterClient->sendMeshCommand("DETONATE", "detonate");
-    detonateStatus = sent ? "Detonate command sent" : "Failed to send detonate";
-    return sent;
-#else
-    detonateStatus = "WiFi not available";
-    return false;
-#endif
-}
-
 void Screen::startTvBGoneTool()
 {
 #if defined(ARDUINO_ARCH_ESP32)
@@ -4233,14 +4150,6 @@ bool Screen::handleSecretMenuInput(char inputEvent)
             sendDetonateCommand();
             setFastFramerate();
             return true;
-<<<<<<< HEAD
-        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
-        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
-        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL):
-            exitDetonateMode();
-            setFastFramerate();
-            setFrames(FOCUS_SECRET);
-=======
         case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_LEFT):
         case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
         case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
@@ -4249,7 +4158,6 @@ bool Screen::handleSecretMenuInput(char inputEvent)
             exitDetonateMode();
             hideSecretMenu();
             setFastFramerate();
->>>>>>> c56aada (Fix detonate and battery meter mesh switching)
             return true;
         default:
             return true;

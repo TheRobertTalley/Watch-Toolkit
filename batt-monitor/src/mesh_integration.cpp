@@ -13,7 +13,10 @@ painlessMesh mesh;          // "extern painlessMesh mesh;" from .h
 bool isPairing = true;      // CHANGED! removed "static" so main.cpp can see it
 // --------------------------------------------------------------------
 
-static const unsigned long PAIRING_DURATION = 15000; // 15 seconds for pairing
+// Shorter pairing window on the watch to speed up tool startup.
+static const unsigned long PAIRING_DURATION = 8000; // 8 seconds max pairing time
+// Minimum time to stay in pairing before allowing early exit when nodes are visible.
+static const unsigned long MIN_PAIRING_TIME_MS = 2000;
 static unsigned long pairingStartTime       = 0;
 
 // Broadcast pairing data every 500 ms
@@ -89,6 +92,15 @@ void meshLoop() {
     // During pairing, broadcast pairing data every 500 ms
     if (isPairing) {
         unsigned long now = millis();
+
+        // If we already see nodes on the mesh and we've spent a minimum time
+        // in pairing, end pairing early to avoid delaying tool startup.
+        if (!mesh.getNodeList().empty() && (now - pairingStartTime) > MIN_PAIRING_TIME_MS) {
+            isPairing = false;
+            Serial.println("Pairing ended early; nodes present on mesh");
+            return;
+        }
+
         if (now - lastBroadcast >= BROADCAST_INTERVAL) {
             lastBroadcast = now;
             broadcastPairingData();
