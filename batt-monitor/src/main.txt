@@ -118,7 +118,7 @@ void drawHpaPsiBarsAndText();
 float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
 
 // painlessMesh external functions
-extern void meshSetup();
+extern void meshSetup(bool longRange);
 extern void meshLoop();
 
 // --------------------------------------------------------------------
@@ -143,7 +143,7 @@ void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLUP);
 
   // Setup mesh network
-  meshSetup();
+  meshSetup(false);
   mesh.onReceive(receivedCallback);
 
   // Calculate the drop in HPA each time we do a 10-minute update
@@ -523,4 +523,3 @@ void drawHpaPsiBarsAndText() {
 
   display.display();
 }
-

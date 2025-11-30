@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <vector>
 #include <map>
+#include <string>
 #include "mesh_config.h"
 
 
@@ -22,6 +23,9 @@ static unsigned long lastBroadcast            = 0;
 // Track received messages for pairing
 std::map<uint64_t, int> receivedMessages; // Device ID -> message count
 std::vector<uint64_t> pairedDevices;      // List of paired devices
+static std::string meshPrefix = MESH_PREFIX;
+static std::string meshPassword = MESH_PASSWORD;
+static uint16_t meshPort = MESH_PORT;
 
 // --------------------------------------------------------------------
 // Send out a simple pairing broadcast
@@ -41,15 +45,23 @@ void broadcastPairingData() {
     Serial.println("Pairing broadcast sent: " + jsonString);
 }
 
+void meshConfigure(const char *prefix, const char *password, uint16_t port) {
+    // Update mesh credentials used by subsequent meshSetup() calls.
+    meshPrefix = prefix ? prefix : MESH_PREFIX;
+    meshPassword = password ? password : MESH_PASSWORD;
+    meshPort = port ? port : MESH_PORT;
+}
+
 // --------------------------------------------------------------------
 // Mesh Setup (called from main.cpp setup())
 // --------------------------------------------------------------------
-void meshSetup() {
+void meshSetup(bool longRange) {
     Serial.println("Initializing mesh network...");
+    Serial.printf("  mesh mode: %s\n", longRange ? "long-range" : "standard");
 
     mesh.setDebugMsgTypes(ERROR | STARTUP | CONNECTION);
     // Initialize the mesh
-    mesh.init(MESH_PREFIX, MESH_PASSWORD, MESH_PORT);
+    mesh.init(meshPrefix.c_str(), meshPassword.c_str(), meshPort);
 
     // We'll not set .onReceive(...) here, because main.cpp does it with `receivedCallback(...)`
 

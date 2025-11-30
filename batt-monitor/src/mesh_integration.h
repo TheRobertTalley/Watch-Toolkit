@@ -9,7 +9,10 @@ extern painlessMesh mesh;
 extern bool isPairing;    // IMPORTANT: "extern bool isPairing;"
 
 // Functions that main.cpp will call
-void meshSetup();
+void meshSetup(bool longRange);
 void meshLoop();
+
+// Allow callers to select credentials before meshSetup.
+void meshConfigure(const char *prefix, const char *password, uint16_t port);
 
 #endif

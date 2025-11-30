@@ -833,9 +833,19 @@ void Screen::drawSegmentedDisplayCharacter(OLEDDisplay *display, int x, int y, u
 
 void Screen::drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
+    auto *self = static_cast<Screen *>(state->userData);
     display->setTextAlignment(TEXT_ALIGN_CENTER);
     display->setFont(FONT_MEDIUM);
     display->drawString(x + display->getWidth() / 2, y, "BATTERY METER");
+
+    // Force the standard (non-LR) mesh while the battery meter is onscreen so telemetry is ready as soon as you swipe in.
+    if (!self->ensureStingrayMeshReady(false)) {
+        display->setFont(FONT_SMALL);
+        display->drawString(x + display->getWidth() / 2,
+                            y + display->getHeight() / 2 - FONT_HEIGHT_SMALL,
+                            "Battery mesh offline");
+        return;
+    }
 
     drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36,
                            LowerRightButtonMode::DigitalClock, 0, 1);
@@ -2504,6 +2514,63 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
                             scannerInstructionText);
         return;
     }
+    if (self->secretMenuMode == SecretMenuMode::Detonate) {
+        const char *detonateInstructionText = "Tap=Detonate  Swipe Left=Back";
+        if (self->detonateModeActive)
+            self->updateDetonateStatus();
+#if HAS_TFT
+        if (auto *tftDisplay = dynamic_cast<TFTDisplay *>(self->dispdev)) {
+            int16_t width = display->getWidth();
+            int16_t height = display->getHeight();
+            tftDisplay->fillRectColor(x, y, width, height, TFT_BLACK);
+            tftDisplay->setTextAlignment(TEXT_ALIGN_CENTER);
+            tftDisplay->drawColorString(x + width / 2, y, "DANGER!!!", secretMenuHeaderColor);
+
+            int16_t buttonHeight = (height / 3) * 2;
+            int16_t buttonY = y + (height - buttonHeight) / 2;
+            const uint16_t buttonColor = self->detonateConnected ? secretMenuHeaderColor : TFT_BLACK;
+            const uint16_t labelColor = self->detonateConnected ? TFT_BLACK : secretMenuAccentColor;
+            tftDisplay->fillRectColor(x + 10, buttonY, width - 20, buttonHeight, buttonColor);
+            if (!self->detonateConnected)
+                tftDisplay->drawRect(x + 10, buttonY, width - 20, buttonHeight, secretMenuAccentColor);
+            tftDisplay->drawColorString(x + width / 2,
+                                        buttonY + buttonHeight / 2 - (FONT_HEIGHT_MEDIUM / 2),
+                                        "DETONATE",
+                                        labelColor);
+            tftDisplay->drawColorString(x + width / 2, y + height - (FONT_HEIGHT_SMALL + 2), detonateInstructionText,
+                                        secretMenuHeaderColor);
+            tftDisplay->drawColorString(x + width / 2, buttonY + buttonHeight + FONT_HEIGHT_SMALL,
+                                        self->detonateStatus.c_str(), secretMenuTextColor);
+            return;
+        }
+#endif
+        int16_t buttonWidth = display->getWidth() - 30;
+        int16_t buttonX = x + (display->getWidth() - buttonWidth) / 2;
+        int16_t buttonHeight = (display->getHeight() / 3) * 2;
+        int16_t buttonY = y + (display->getHeight() - buttonHeight) / 2;
+        display->setColor(self->detonateConnected ? WHITE : BLACK);
+        display->fillRect(buttonX, buttonY, buttonWidth, buttonHeight);
+        if (!self->detonateConnected) {
+            display->setColor(WHITE);
+            display->drawRect(buttonX, buttonY, buttonWidth, buttonHeight);
+        }
+        display->setTextAlignment(TEXT_ALIGN_CENTER);
+        display->setFont(FONT_MEDIUM);
+        display->drawString(x + display->getWidth() / 2, y, "DANGER!!!");
+        display->setFont(FONT_SMALL);
+        display->drawString(x + display->getWidth() / 2,
+                            buttonY + (buttonHeight / 2) - (FONT_HEIGHT_SMALL / 2),
+                            "DETONATE");
+        display->drawString(x + display->getWidth() / 2,
+                            y + display->getHeight() - (FONT_HEIGHT_SMALL + 2),
+                            detonateInstructionText);
+        display->setTextAlignment(TEXT_ALIGN_LEFT);
+        display->drawString(x + 2,
+                            buttonY + buttonHeight + FONT_HEIGHT_SMALL + 4,
+                            self->detonateStatus.c_str());
+        display->setTextAlignment(TEXT_ALIGN_CENTER);
+        return;
+    }
     if (self->secretMenuMode == SecretMenuMode::StationAps || self->secretMenuMode == SecretMenuMode::StationStations) {
 #if HAS_WIFI && defined(ARCH_ESP32)
         auto &tracker = marauder::StationTracker::instance();
@@ -3657,6 +3724,10 @@ void Screen::handleSecretMenuSelection()
             setFrames(FOCUS_SECRET);
         } else if (secretMenuSelection == stationBrowserMenuIndex) {
             showStationBrowser();
+        } else if (secretMenuSelection == detonateMenuIndex) {
+            enterDetonateMode();
+            setFastFramerate();
+            setFrames(FOCUS_SECRET);
         } else if (secretMenuSelection == batteryMenuIndex) {
             startBattMeterMode();
             hideSecretMenu();
@@ -3722,11 +3793,17 @@ void Screen::showStationBrowser()
 }
 void Screen::startBattMeterMode()
 {
-    if (battMeterActive)
+    // Detonate always wins; do not downgrade the link to standard mesh while detonation mode is active.
+    if (detonateModeActive) {
+        LOG_WARN("Ignoring battery meter request while detonate mode is active");
         return;
-    if (battMeterClient)
-        battMeterClient->start();
-    if (!battMeterClient || !battMeterClient->isActive()) {
+    }
+
+    // Always force a fresh mesh session for the battery tool.
+    if (battMeterClient && battMeterClient->isActive())
+        battMeterClient->stop();
+
+    if (!ensureStingrayMeshReady(false)) {
         LOG_WARN("Batt meter client unavailable");
         battMeterActive = false;
         return;
@@ -3856,6 +3933,112 @@ void Screen::stopTvBGoneTool()
 #if defined(ARDUINO_ARCH_ESP32)
     if (tvBGone)
         tvBGone->stop();
+#endif
+}
+
+bool Screen::ensureStingrayMeshReady(bool longRange)
+{
+#if HAS_WIFI
+    if (!battMeterClient)
+        return false;
+
+    // TODO: Remove this verbose log once detonate/battery meter interaction is fully validated.
+    LOG_INFO("ensureStingrayMeshReady: requested longRange=%s, clientActive=%s, clientLR=%s, meshReady=%s",
+             longRange ? "true" : "false",
+             battMeterClient->isActive() ? "true" : "false",
+             battMeterClient->isLongRangeMode() ? "true" : "false",
+             battMeterClient->isMeshReady() ? "true" : "false");
+
+    bool needsRestart = !battMeterClient->isActive() ||
+                        battMeterClient->isLongRangeMode() != longRange;
+    if (needsRestart || !battMeterClient->isMeshReady()) {
+        battMeterClient->start(longRange);
+        LOG_INFO("ensureStingrayMeshReady: restarted mesh with longRange=%s", longRange ? "true" : "false");
+    }
+    return battMeterClient->isMeshReady();
+#else
+    (void)longRange;
+    return false;
+#endif
+}
+
+void Screen::enterDetonateMode()
+{
+#if HAS_WIFI
+    if (detonateModeActive)
+        return;
+    detonateModeActive = true;
+    bool meshWasRunning = battMeterClient && battMeterClient->isActive();
+    if (battMeterActive) {
+        battNetworkWasActive = true;
+        stopBattMeterMode();
+    } else {
+        battNetworkWasActive = false;
+        if (meshWasRunning && battMeterClient)
+            battMeterClient->stop();
+    }
+    detonateConnected = false;
+    detonateStatus = "Starting claymore link...";
+    if (!ensureStingrayMeshReady(true)) {
+        detonateStatus = "WiFi not available";
+        detonateModeActive = false;
+        return;
+    }
+
+    // Send a non-detonate command to let the claymore know we're present and linked.
+    // Carmi-Claymore treats any message where DETONATE != "detonate" as a connection/armed indicator.
+    if (battMeterClient) {
+        bool sent = battMeterClient->sendMeshCommand("DETONATE", "NONE");
+        LOG_INFO("Detonate handshake sent (DETONATE=NONE), sent=%s", sent ? "true" : "false");
+    }
+
+    secretMenuMode = SecretMenuMode::Detonate;
+#else
+    detonateStatus = "WiFi unavailable";
+    secretMenuMode = SecretMenuMode::Detonate;
+#endif
+}
+
+void Screen::exitDetonateMode()
+{
+#if HAS_WIFI
+    detonateModeActive = false;
+    detonateConnected = false;
+    detonateStatus = "Tap detonate to broadcast";
+    if (battMeterClient && battMeterClient->isActive())
+        battMeterClient->stop();
+    if (battNetworkWasActive)
+        startBattMeterMode();
+#endif
+    secretMenuMode = SecretMenuMode::Root;
+}
+
+void Screen::updateDetonateStatus()
+{
+#if HAS_WIFI
+    if (!detonateModeActive || !battMeterClient)
+        return;
+    detonateConnected = battMeterClient->hasMeshPeers();
+    if (detonateConnected)
+        detonateStatus = "Claymore connected";
+    else
+        detonateStatus = "Searching for claymore...";
+#endif
+}
+
+bool Screen::sendDetonateCommand()
+{
+#if HAS_WIFI
+    if (!ensureStingrayMeshReady(true)) {
+        detonateStatus = "Not connected to claymore";
+        return false;
+    }
+    bool sent = battMeterClient->sendMeshCommand("DETONATE", "detonate");
+    detonateStatus = sent ? "Detonate command sent" : "Failed to send detonate";
+    return sent;
+#else
+    detonateStatus = "WiFi not available";
+    return false;
 #endif
 }
 
@@ -4050,12 +4233,23 @@ bool Screen::handleSecretMenuInput(char inputEvent)
             sendDetonateCommand();
             setFastFramerate();
             return true;
+<<<<<<< HEAD
         case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
         case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
         case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL):
             exitDetonateMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
+=======
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_LEFT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL):
+            // A physical swipe-left should immediately back out to the clock/battery screens.
+            exitDetonateMode();
+            hideSecretMenu();
+            setFastFramerate();
+>>>>>>> c56aada (Fix detonate and battery meter mesh switching)
             return true;
         default:
             return true;

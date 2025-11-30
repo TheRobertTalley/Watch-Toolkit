@@ -6,7 +6,31 @@
 #include <ArduinoJson.h>
 #include "mesh_integration.h"
 
+#if defined(ARDUINO_ARCH_ESP32)
+#include <esp_wifi.h>
+#endif
+
 BattMeterClient *battMeterClient = nullptr;
+
+#if defined(ARDUINO_ARCH_ESP32)
+static void configureWifiProtocol(bool longRange)
+{
+    if (longRange) {
+        // Match Carmi-Claymore: enable LR on both STA and AP interfaces so mesh nodes
+        // using either role can communicate reliably.
+        esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR);
+        esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_LR);
+        LOG_INFO("BattMeterClient configured to long-range WiFi protocol (STA+AP)");
+    } else {
+        // Restore standard 11b/g/n on both STA and AP.
+        esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+        esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
+        LOG_INFO("BattMeterClient configured to standard WiFi protocol (STA+AP)");
+    }
+}
+#else
+static void configureWifiProtocol(bool) {}
+#endif
 
 namespace
 {
@@ -55,26 +79,48 @@ BattMeterClient::BattMeterClient() : concurrency::OSThread("BattMeterClient")
 
 void BattMeterClient::start()
 {
-    if (active)
+    start(false);
+}
+
+void BattMeterClient::start(bool longRange)
+{
+    if (active && longRangeMode == longRange)
         return;
+
+    if (active)
+        stop();
+
+    longRangeMode = longRange;
+    // Hard reset WiFi before reconfiguring for a tool-specific mesh.
     previousWifiMode = WiFi.getMode();
-    if (previousWifiMode != WIFI_STA) {
-        WiFi.mode(WIFI_STA);
-    }
     WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    delay(50); // allow radio to settle before re-enabling
+    WiFi.mode(WIFI_STA);
+
+#if defined(ARDUINO_ARCH_ESP32)
+    configureWifiProtocol(longRange);
+#endif
+
+    // Select mesh credentials based on the requested mode.
+    const char *meshPrefix = longRange ? DETONATE_MESH_PREFIX : BATT_MESH_PREFIX;
+    const char *meshPassword = longRange ? DETONATE_MESH_PASSWORD : BATT_MESH_PASSWORD;
+    uint16_t meshPort = longRange ? DETONATE_MESH_PORT : BATT_MESH_PORT;
+    meshConfigure(meshPrefix, meshPassword, meshPort);
+
     if (meshInitialized) {
         mesh.stop();
         meshInitialized = false;
     }
     lastPercent = -1;
     lastVoltage = 0.0f;
-    meshSetup();
+    meshSetup(longRange);
     meshInitialized = true;
     gInstance = this;
     mesh.onReceive(meshReceiveTrampoline);
     active = true;
     setInterval(kMeshUpdateDelayMs);
-    LOG_INFO("BattMeterClient started");
+    LOG_INFO("BattMeterClient started (LR=%s)", longRange ? "yes" : "no");
 }
 
 void BattMeterClient::stop()
@@ -100,14 +146,24 @@ int32_t BattMeterClient::runOnce()
     if (!active)
         return UINT32_MAX;
     meshLoop();
-    if (lastPercent >= 0 && (millis() - lastUpdateMs) > kConnectionWatchdogMs) {
-        lastPercent = -1;
+    static uint32_t lastStaleLogMs = 0;
+    uint32_t now = millis();
+    if (lastPercent >= 0 && (now - lastUpdateMs) > kConnectionWatchdogMs && (now - lastStaleLogMs) > kConnectionWatchdogMs) {
+        LOG_WARN("Batt meter telemetry stale; keeping last known values");
+        lastStaleLogMs = now;
     }
     return kMeshUpdateDelayMs;
 }
 
 void BattMeterClient::handleMessage(uint32_t, String &msg)
 {
+    // In detonate (long-range) mode we should not treat incoming JSON as
+    // battery telemetry for the UI. Detonate uses the mesh only for commands.
+    if (longRangeMode) {
+        LOG_DEBUG("BattMeterClient ignoring battery JSON while in detonate mode");
+        return;
+    }
+
     ensureReceiveFilter();
 
     StaticJsonDocument<256> doc;
@@ -133,7 +189,6 @@ void BattMeterClient::handleMessage(uint32_t, String &msg)
         if (percent < 0)
             return false;
 
-        // Skip placeholder readings that report both 0 V and 0%.
         if (voltage <= 0.0f && percent <= 0)
             return false;
 
@@ -151,6 +206,37 @@ void BattMeterClient::handleMessage(uint32_t, String &msg)
 
     if (!updated)
         LOG_DEBUG("Batt meter JSON missing battery fields");
+}
+
+bool BattMeterClient::isMeshReady() const
+{
+    return active && meshInitialized;
+}
+
+bool BattMeterClient::hasMeshPeers() const
+{
+    if (!active || !meshInitialized)
+        return false;
+
+    if (!mesh.getNodeList().empty())
+        return true;
+
+    return lastPercent >= 0;
+}
+
+bool BattMeterClient::sendMeshCommand(const String &commandKey, const String &commandValue)
+{
+    if (!active || !meshInitialized)
+        return false;
+
+    StaticJsonDocument<256> doc;
+    doc["meshCommands"][commandKey] = commandValue;
+
+    String json;
+    serializeJson(doc, json);
+    mesh.sendBroadcast(json);
+    LOG_INFO("BattMeterClient sent mesh command %s=%s", commandKey.c_str(), commandValue.c_str());
+    return true;
 }
 
 #else

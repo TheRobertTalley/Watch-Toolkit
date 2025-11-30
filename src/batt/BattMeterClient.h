@@ -20,6 +20,7 @@ class BattMeterClient : public concurrency::OSThread
     BattMeterClient();
 
     void start();
+    void start(bool longRange);
     void stop();
     bool isActive() const { return active; }
 
@@ -27,6 +28,11 @@ class BattMeterClient : public concurrency::OSThread
     int getLastPercent() const { return lastPercent; }
     float getLastVoltage() const { return lastVoltage; }
     uint32_t getLastUpdateMs() const { return lastUpdateMs; }
+
+    bool isMeshReady() const;
+    bool hasMeshPeers() const;
+    bool sendMeshCommand(const String &commandKey, const String &commandValue);
+    bool isLongRangeMode() const { return longRangeMode; }
 
   protected:
     int32_t runOnce() override;
@@ -38,6 +44,7 @@ class BattMeterClient : public concurrency::OSThread
     bool active = false;
     WiFiMode_t previousWifiMode = WIFI_OFF;
     bool meshInitialized = false;
+    bool longRangeMode = false;
 
     volatile int lastPercent = -1;
     volatile float lastVoltage = 0.0f;
@@ -51,12 +58,18 @@ class BattMeterClient
   public:
     BattMeterClient() = default;
     void start() {}
+    void start(bool) {}
     void stop() {}
     bool isActive() const { return false; }
     bool hasReading() const { return false; }
     int getLastPercent() const { return -1; }
     float getLastVoltage() const { return 0.0f; }
     uint32_t getLastUpdateMs() const { return 0; }
+
+    bool isMeshReady() const { return false; }
+    bool hasMeshPeers() const { return false; }
+    bool sendMeshCommand(const String &, const String &) { return false; }
+    bool isLongRangeMode() const { return false; }
 };
 
 #endif

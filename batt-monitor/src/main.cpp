@@ -70,7 +70,7 @@ void setup() {
     Serial.println("T-Watch S3 Mesh Battery Monitor (Serial Only)");
 
     ensureReceiveFilter();
-    meshSetup();
+    meshSetup(false);
     mesh.onReceive(receivedCallback);
 }
 
