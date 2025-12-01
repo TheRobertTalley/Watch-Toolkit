@@ -62,6 +62,7 @@ enum class LowerRightButtonMode {
 
 #include "EInkDisplay2.h"
 #include "EInkDynamicDisplay.h"
+#include "graphics/MsdCalculatorServer.h"
 #include "PointStruct.h"
 #include "TFTDisplay.h"
 #include "TypedQueue.h"
@@ -616,6 +617,7 @@ class Screen : public concurrency::OSThread
             uint8_t settings = 0;
             uint8_t wifi = 0;
             uint8_t secretMenu = 0;
+            uint8_t msdSummary = 0;
             uint8_t battMeter = 0;
         } positions;
 
@@ -651,6 +653,7 @@ class Screen : public concurrency::OSThread
     static void drawDebugInfoWiFiTrampoline(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 
     static void drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+    static void drawMsdStatusFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     static void drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     static void drawToneGeneratorFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 
@@ -703,6 +706,8 @@ class Screen : public concurrency::OSThread
       void stopBattMeterMode();
       void startToneGeneratorMode();
       void stopToneGeneratorMode();
+      void startMsdCalculatorMode();
+      void stopMsdCalculatorMode();
       void toggleTonePlayback();
       void playToneOnce();
       void stopTonePlayback();
@@ -725,7 +730,8 @@ class Screen : public concurrency::OSThread
           StationAps,
           StationStations,
           Detonate,
-          ToneGenerator
+          ToneGenerator,
+          MsdCalculator
       };
       SecretMenuMode secretMenuMode = SecretMenuMode::Root;
       uint8_t wifiAttackSelection = 0;
@@ -738,6 +744,8 @@ class Screen : public concurrency::OSThread
     bool toneGeneratorActive = false;
     bool toneGeneratorPlaying = false;
     uint32_t toneGeneratorFrequencyHz = 2600;
+    MsdCalculatorServer msdCalculatorServer;
+    bool msdSummaryActive = false;
 
     bool hasCompass = false;
     float compassHeading;

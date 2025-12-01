@@ -29,11 +29,10 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <array>
 #include <algorithm>
 #include <Arduino.h>
+#include <cstdlib>
+#include <cstring>
 
 #include "DisplayFormatters.h"
-#if !MESHTASTIC_EXCLUDE_GPS
-#include "GPS.h"
-#endif
 #include "ButtonThread.h"
 #include "MeshService.h"
 #include "NodeDB.h"
@@ -43,14 +42,17 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include "graphics/ScreenFonts.h"
 #include "graphics/images.h"
 #include "graphics/SecretMenuImage.h"
+#include "graphics/MsdCalculatorPage.h"
+#include "graphics/MsdCalculatorServer.h"
 #include "marauder/StationTracker.h"
 #include "marauder/WifiAttackController.h"
 #include "ir/TVBGone.h"
 #if HAS_TFT
 #include "graphics/TFTDisplay.h"
 #endif
-#include "input/ScanAndSelect.h"
+
 #include "input/TouchScreenImpl1.h"
+#include "input/ScanAndSelect.h"
 #include "main.h"
 #include "mesh-pb-constants.h"
 #include "mesh/Channels.h"
@@ -122,7 +124,7 @@ std::string functionSymbolString = "";
 #if HAS_SCREEN
 namespace
 {
-enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, Detonate, BatteryMeter, ToneGenerator, Count };
+enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, Detonate, BatteryMeter, ToneGenerator, MsdCalculator, Count };
 static const char *const secretMenuItems[] = {
     "TV B Gone",
     "WiFi Attacks",
@@ -130,7 +132,8 @@ static const char *const secretMenuItems[] = {
     "Station Browser",
     "Detonate",
     "Battery Meter",
-    "Tone Generator"};
+    "Tone Generator",
+    "MSD Calculator"};
 constexpr size_t secretMenuItemCount = static_cast<size_t>(SecretMenuEntry::Count);
 constexpr size_t tvBGoneMenuIndex = static_cast<size_t>(SecretMenuEntry::TvBGone);
 constexpr size_t wifiAttacksMenuIndex = static_cast<size_t>(SecretMenuEntry::WifiAttacks);
@@ -139,6 +142,7 @@ constexpr size_t stationBrowserMenuIndex = static_cast<size_t>(SecretMenuEntry::
 constexpr size_t detonateMenuIndex = static_cast<size_t>(SecretMenuEntry::Detonate);
 constexpr size_t batteryMenuIndex = static_cast<size_t>(SecretMenuEntry::BatteryMeter);
 constexpr size_t toneGeneratorMenuIndex = static_cast<size_t>(SecretMenuEntry::ToneGenerator);
+constexpr size_t msdCalculatorMenuIndex = static_cast<size_t>(SecretMenuEntry::MsdCalculator);
 constexpr size_t secretMenuAnchorIndex = batteryMenuIndex; // keep anchor aligned with old battery/device location
 
 constexpr size_t wifiAttackItemCount = marauder::kWifiAttackItemCount;
@@ -238,7 +242,6 @@ static std::string macToString(const std::array<uint8_t, 6> &mac)
              mac[5]);
     return buf;
 }
-
 } // namespace
 #endif
 
@@ -2272,6 +2275,9 @@ int32_t Screen::runOnce()
     // soon, otherwise just 1 fps (to save CPU) We also ask to be called twice
     // as fast as we really need so that any rounding errors still result with
     // the correct framerate
+#if HAS_WIFI
+    msdCalculatorServer.loop();
+#endif
     return (1000 / targetFramerate);
 }
 
@@ -2876,6 +2882,94 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
     }
 #endif
 
+    if (self->secretMenuMode == SecretMenuMode::MsdCalculator) {
+#if HAS_TFT
+        if (auto *tftDisplay = dynamic_cast<TFTDisplay *>(self->dispdev)) {
+            int16_t width = display->getWidth();
+            int16_t height = display->getHeight();
+            tftDisplay->fillRectColor(x, y, width, height, TFT_BLACK);
+            int16_t bgX = x + (width - secretMenuEagleWidth) / 2;
+            int16_t bgY = y + (height - secretMenuEagleHeight) / 2 - 30;
+            if (bgX < x)
+                bgX = x;
+            if (bgY < y)
+                bgY = y;
+            if (secretMenuEagleWidth <= width && secretMenuEagleHeight <= height) {
+                tftDisplay->drawXBitmapColor(bgX, bgY, secretMenuEagleBits, secretMenuEagleWidth, secretMenuEagleHeight,
+                                             secretMenuHeaderColor);
+            }
+            tftDisplay->drawColorString(x + width / 2 - 40, y, "MSD Calculator", secretMenuHeaderColor);
+            display->setFont(FONT_SMALL);
+            const auto &results = self->msdCalculatorServer.getResults();
+            std::string statusLine = self->msdCalculatorServer.statusText();
+#if HAS_WIFI
+            String ipAddress = WiFi.softAPIP().toString();
+            std::string ipLine = std::string("AP: ") + ipAddress.c_str();
+#else
+            std::string ipLine = "WiFi unavailable";
+#endif
+            int16_t infoY = y + FONT_HEIGHT_MEDIUM + 8;
+            tftDisplay->drawColorString(x + width / 2, infoY, statusLine.c_str(), secretMenuTextColor);
+            if (!results.valid) {
+                tftDisplay->drawColorString(x + width / 2, infoY + FONT_HEIGHT_SMALL + 6, ipLine.c_str(),
+                                            secretMenuAccentColor);
+            }
+            int16_t resultY = infoY + 2 * (FONT_HEIGHT_SMALL + 6);
+            char lineBuf[32];
+            if (results.valid) {
+                snprintf(lineBuf, sizeof(lineBuf), "TNT %.3f lbs", results.tnt);
+                tftDisplay->drawColorString(x + width / 2, resultY, lineBuf, secretMenuTextColor);
+                snprintf(lineBuf, sizeof(lineBuf), "K18 %.1f ft", results.msd18);
+                tftDisplay->drawColorString(x + width / 2, resultY + FONT_HEIGHT_SMALL + 4, lineBuf, secretMenuTextColor);
+                snprintf(lineBuf, sizeof(lineBuf), "K24 %.1f ft", results.msd24);
+                tftDisplay->drawColorString(x + width / 2, resultY + 2 * (FONT_HEIGHT_SMALL + 4), lineBuf,
+                                            secretMenuTextColor);
+            } else {
+                tftDisplay->drawColorString(x + width / 2, resultY, "Waiting for data", secretMenuTextColor);
+            }
+            return;
+        }
+#endif
+        display->setColor(BLACK);
+        display->fillRect(x, y, display->getWidth(), display->getHeight());
+        display->setColor(WHITE);
+        display->setTextAlignment(TEXT_ALIGN_CENTER);
+        display->setFont(FONT_MEDIUM);
+        display->drawString(x + display->getWidth() / 2, y, "MSD Calculator");
+        display->setFont(FONT_SMALL);
+        int16_t baseY = y + FONT_HEIGHT_MEDIUM + 6;
+        display->drawString(x + display->getWidth() / 2,
+                            baseY,
+                            self->msdCalculatorServer.statusText());
+        const auto &results = self->msdCalculatorServer.getResults();
+#if HAS_WIFI
+        String ipAddress = WiFi.softAPIP().toString();
+        std::string ipLine = std::string("AP: ") + ipAddress.c_str();
+#else
+        std::string ipLine = "WiFi unavailable";
+#endif
+        if (!results.valid) {
+            display->drawString(x + display->getWidth() / 2,
+                                baseY + FONT_HEIGHT_SMALL + 4,
+                                ipLine.c_str());
+        }
+        int16_t resultY = baseY + FONT_HEIGHT_SMALL + 12;
+        int16_t lineStep = FONT_HEIGHT_LARGE + 6;
+        char lineBuf[32];
+        display->setFont(FONT_LARGE);
+        if (results.valid) {
+            snprintf(lineBuf, sizeof(lineBuf), "TNT %.3f lbs", results.tnt);
+            display->drawString(x + display->getWidth() / 2, resultY, lineBuf);
+            snprintf(lineBuf, sizeof(lineBuf), "K18 %.1f ft", results.msd18);
+            display->drawString(x + display->getWidth() / 2, resultY + lineStep, lineBuf);
+            snprintf(lineBuf, sizeof(lineBuf), "K24 %.1f ft", results.msd24);
+            display->drawString(x + display->getWidth() / 2, resultY + 2 * lineStep, lineBuf);
+        } else {
+            display->drawString(x + display->getWidth() / 2, resultY, "Waiting for data");
+        }
+        return;
+    }
+
     display->setColor(BLACK);
     display->fillRect(x, y, display->getWidth(), display->getHeight());
     display->setColor(WHITE);
@@ -2908,6 +3002,56 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
     display->drawString(x + display->getWidth() / 2,
                         y + display->getHeight() - (FONT_HEIGHT_SMALL + 2),
                         rootInstructionText);
+}
+
+void Screen::drawMsdStatusFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+{
+    Screen *self = static_cast<Screen *>(state->userData);
+    if (!self)
+        return;
+
+    const auto &results = self->msdCalculatorServer.getResults();
+    display->setColor(BLACK);
+    display->fillRect(x, y, display->getWidth(), display->getHeight());
+    display->setColor(WHITE);
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
+
+    display->setFont(FONT_MEDIUM);
+    display->drawString(x + display->getWidth() / 2, y, "MSD Calculator");
+
+    int16_t cursorY = y + FONT_HEIGHT_MEDIUM + 6;
+    display->setFont(FONT_SMALL);
+    display->drawString(x + display->getWidth() / 2, cursorY, self->msdCalculatorServer.statusText());
+    cursorY += FONT_HEIGHT_SMALL + 4;
+
+#if HAS_WIFI
+    if (!results.valid) {
+        String ipAddress = WiFi.softAPIP().toString();
+        std::string ipLine = std::string("AP: ") + ipAddress.c_str();
+        display->drawString(x + display->getWidth() / 2, cursorY, ipLine.c_str());
+        cursorY += FONT_HEIGHT_SMALL + 4;
+    }
+#else
+    if (!results.valid) {
+        display->drawString(x + display->getWidth() / 2, cursorY, "WiFi unavailable");
+        cursorY += FONT_HEIGHT_SMALL + 4;
+    }
+#endif
+
+    display->setFont(FONT_LARGE);
+    int16_t resultY = cursorY + 4;
+    int16_t lineStep = FONT_HEIGHT_LARGE + 8;
+    char lineBuf[32];
+    if (results.valid) {
+        snprintf(lineBuf, sizeof(lineBuf), "TNT %.3f lbs", results.tnt);
+        display->drawString(x + display->getWidth() / 2, resultY, lineBuf);
+        snprintf(lineBuf, sizeof(lineBuf), "K18 %.1f ft", results.msd18);
+        display->drawString(x + display->getWidth() / 2, resultY + lineStep, lineBuf);
+        snprintf(lineBuf, sizeof(lineBuf), "K24 %.1f ft", results.msd24);
+        display->drawString(x + display->getWidth() / 2, resultY + 2 * lineStep, lineBuf);
+    } else {
+        display->drawString(x + display->getWidth() / 2, resultY, "Waiting for data");
+    }
 }
 
 /* show a message that the SSL cert is being built
@@ -3085,6 +3229,10 @@ void Screen::setFrames(FrameFocus focus)
         normalFrames[numframes++] = &Screen::drawDebugInfoWiFiTrampoline;
     }
 #endif
+    if (msdSummaryActive) {
+        fsi.positions.msdSummary = numframes;
+        normalFrames[numframes++] = &Screen::drawMsdStatusFrame;
+    }
     if (secretMenuVisible) {
         fsi.positions.secretMenu = numframes;
         normalFrames[numframes++] = &Screen::drawSecretMenuFrame;
@@ -3142,6 +3290,8 @@ void Screen::setFrames(FrameFocus focus)
             ui->switchToFrame(fsi.positions.wifi);
         else if (secretMenuVisible && originalPosition == oldFsi.positions.secretMenu)
             ui->switchToFrame(fsi.positions.secretMenu);
+        else if (msdSummaryActive && originalPosition == oldFsi.positions.msdSummary)
+            ui->switchToFrame(fsi.positions.msdSummary);
         else if (battMeterActive && originalPosition == oldFsi.positions.battMeter)
             ui->switchToFrame(fsi.positions.battMeter);
 
@@ -3748,6 +3898,8 @@ void Screen::hideSecretMenu()
         exitDetonateMode();
     if (secretMenuMode == SecretMenuMode::ToneGenerator)
         stopToneGeneratorMode();
+    if (secretMenuMode == SecretMenuMode::MsdCalculator)
+        stopMsdCalculatorMode();
     secretMenuMode = SecretMenuMode::Root;
     wifiAttackSelection = 0;
     wifiScanInProgress = false;
@@ -3787,6 +3939,10 @@ void Screen::handleSecretMenuSelection()
             setFrames(FOCUS_SECRET);
         } else if (secretMenuSelection == toneGeneratorMenuIndex) {
             startToneGeneratorMode();
+            setFastFramerate();
+            setFrames(FOCUS_SECRET);
+        } else if (secretMenuSelection == msdCalculatorMenuIndex) {
+            startMsdCalculatorMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
         } else if (secretMenuSelection == stationBrowserMenuIndex) {
@@ -3895,6 +4051,31 @@ void Screen::stopToneGeneratorMode()
 {
     stopTonePlayback();
     toneGeneratorActive = false;
+    secretMenuMode = SecretMenuMode::Root;
+}
+
+void Screen::startMsdCalculatorMode()
+{
+#if HAS_WIFI
+    if (detonateModeActive)
+        exitDetonateMode();
+    if (battMeterActive)
+        stopBattMeterMode();
+    if (toneGeneratorActive)
+        stopToneGeneratorMode();
+    msdSummaryActive = true;
+    msdCalculatorServer.start();
+    secretMenuMode = SecretMenuMode::MsdCalculator;
+#else
+    LOG_WARN("MSD Calculator requires WiFi");
+#endif
+}
+
+void Screen::stopMsdCalculatorMode()
+{
+#if HAS_WIFI
+    msdCalculatorServer.stop();
+#endif
     secretMenuMode = SecretMenuMode::Root;
 }
 
@@ -4326,6 +4507,20 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         return handleDetonateNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::ToneGenerator)
         return handleToneGeneratorNav(inputEvent);
+    if (secretMenuMode == SecretMenuMode::MsdCalculator) {
+        switch (inputEvent) {
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_LEFT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL):
+            stopMsdCalculatorMode();
+            hideSecretMenu();
+            setFastFramerate();
+            return true;
+        default:
+            return true;
+        }
+    }
 
     switch (inputEvent) {
     case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_UP):
