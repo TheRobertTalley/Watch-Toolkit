@@ -642,21 +642,21 @@ void Screen::drawDigitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *sta
 
     drawBattery(display, x, y + 7, imgBattery, powerStatus);
 
-    if (powerStatus->getHasBattery()) {
-        String batteryPercent = String(powerStatus->getBatteryChargePercent()) + "%";
+    if (battMeterActive) {
+        if (powerStatus->getHasBattery()) {
+            String batteryPercent = String(powerStatus->getBatteryChargePercent()) + "%";
+            display->setFont(FONT_SMALL);
+            display->drawString(x + 20, y + 2, batteryPercent);
+        }
 
-        display->setFont(FONT_SMALL);
+        if (nimbleBluetooth && nimbleBluetooth->isConnected()) {
+            drawBluetoothConnectedIcon(display, display->getWidth() - 18, y + 2);
+        }
 
-        display->drawString(x + 20, y + 2, batteryPercent);
+        int batteryButtonPercent = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastPercent() : -1;
+        drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, LowerRightButtonMode::BatteryPercent,
+                               batteryButtonPercent, 1);
     }
-
-    if (nimbleBluetooth && nimbleBluetooth->isConnected()) {
-        drawBluetoothConnectedIcon(display, display->getWidth() - 18, y + 2);
-    }
-
-    int batteryButtonPercent = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastPercent() : -1;
-    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, LowerRightButtonMode::BatteryPercent,
-                           batteryButtonPercent, 1);
 
     display->setColor(OLEDDISPLAY_COLOR::WHITE);
 
