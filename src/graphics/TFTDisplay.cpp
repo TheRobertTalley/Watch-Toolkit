@@ -1098,8 +1098,10 @@ void TFTDisplay::setDisplayBrightness(uint8_t _brightness)
 #ifdef RAK14014
     // todo
 #else
-    tft->setBrightness(_brightness);
-    LOG_DEBUG("Brightness is set to value: %i ", _brightness);
+    // Tone down the backlight globally by ~15% to make the watch less bright.
+    uint8_t scaled = static_cast<uint8_t>((static_cast<uint16_t>(_brightness) * 85) / 100);
+    tft->setBrightness(scaled);
+    LOG_DEBUG("Brightness is set to value: %i ", scaled);
 #endif
 }
 

@@ -75,7 +75,7 @@ enum class LowerRightButtonMode {
 
 // 0 to 255, though particular variants might define different defaults
 #ifndef BRIGHTNESS_DEFAULT
-#define BRIGHTNESS_DEFAULT 150
+#define BRIGHTNESS_DEFAULT 20
 #endif
 
 // Meters to feet conversion
@@ -652,6 +652,7 @@ class Screen : public concurrency::OSThread
 
     static void drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     static void drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+    static void drawToneGeneratorFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 
 #if defined(DISPLAY_CLOCK_FRAME)
     static void drawAnalogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
@@ -700,6 +701,11 @@ class Screen : public concurrency::OSThread
       void showStationBrowser();
       void startBattMeterMode();
       void stopBattMeterMode();
+      void startToneGeneratorMode();
+      void stopToneGeneratorMode();
+      void toggleTonePlayback();
+      void playToneOnce();
+      void stopTonePlayback();
       void startTvBGoneTool();
       void stopTvBGoneTool();
       bool ensureStingrayMeshReady(bool longRange);
@@ -718,7 +724,8 @@ class Screen : public concurrency::OSThread
           WifiScanner,
           StationAps,
           StationStations,
-          Detonate
+          Detonate,
+          ToneGenerator
       };
       SecretMenuMode secretMenuMode = SecretMenuMode::Root;
       uint8_t wifiAttackSelection = 0;
@@ -728,6 +735,9 @@ class Screen : public concurrency::OSThread
     bool battNetworkWasActive = false;
     bool detonateConnected = false;
     std::string detonateStatus = "Tap detonate to broadcast";
+    bool toneGeneratorActive = false;
+    bool toneGeneratorPlaying = false;
+    uint32_t toneGeneratorFrequencyHz = 2600;
 
     bool hasCompass = false;
     float compassHeading;

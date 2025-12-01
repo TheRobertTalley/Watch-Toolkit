@@ -20,6 +20,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 */
 #include "Screen.h"
+#include "audio/ToneOutput.h"
 #include "PowerMon.h"
 #include "Throttle.h"
 #include "configuration.h"
@@ -27,6 +28,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <OLEDDisplay.h>
 #include <array>
 #include <algorithm>
+#include <Arduino.h>
 
 #include "DisplayFormatters.h"
 #if !MESHTASTIC_EXCLUDE_GPS
@@ -120,14 +122,15 @@ std::string functionSymbolString = "";
 #if HAS_SCREEN
 namespace
 {
-enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, Detonate, BatteryMeter, Count };
+enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, Detonate, BatteryMeter, ToneGenerator, Count };
 static const char *const secretMenuItems[] = {
     "TV B Gone",
     "WiFi Attacks",
     "WiFi Scanner",
     "Station Browser",
     "Detonate",
-    "Battery Meter"};
+    "Battery Meter",
+    "Tone Generator"};
 constexpr size_t secretMenuItemCount = static_cast<size_t>(SecretMenuEntry::Count);
 constexpr size_t tvBGoneMenuIndex = static_cast<size_t>(SecretMenuEntry::TvBGone);
 constexpr size_t wifiAttacksMenuIndex = static_cast<size_t>(SecretMenuEntry::WifiAttacks);
@@ -135,6 +138,7 @@ constexpr size_t wifiScannerMenuIndex = static_cast<size_t>(SecretMenuEntry::Wif
 constexpr size_t stationBrowserMenuIndex = static_cast<size_t>(SecretMenuEntry::StationBrowser);
 constexpr size_t detonateMenuIndex = static_cast<size_t>(SecretMenuEntry::Detonate);
 constexpr size_t batteryMenuIndex = static_cast<size_t>(SecretMenuEntry::BatteryMeter);
+constexpr size_t toneGeneratorMenuIndex = static_cast<size_t>(SecretMenuEntry::ToneGenerator);
 constexpr size_t secretMenuAnchorIndex = batteryMenuIndex; // keep anchor aligned with old battery/device location
 
 constexpr size_t wifiAttackItemCount = marauder::kWifiAttackItemCount;
@@ -143,11 +147,11 @@ constexpr size_t wifiAttackVisibleCount = 6;
 static std::string secretMenuItemLabel(size_t index)
 {
     std::string label = secretMenuItems[index];
-    if (tvBGone && index == tvBGoneMenuIndex && tvBGone->isActive()) {
-        label = "*" + label + "*";
+        if (tvBGone && index == tvBGoneMenuIndex && tvBGone->isActive()) {
+            label = "*" + label + "*";
+        }
+        return label;
     }
-    return label;
-}
 
 // TouchScreenImpl1 maps physical swipes horizontally inverted (swipe left -> InputEventChar_RIGHT).
 // Adjust the gesture sequence to match the physical pattern: up, down, left, right, right, left, down, up.
@@ -897,6 +901,43 @@ void Screen::drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state,
     display->drawString(x + display->getWidth() / 2, y + display->getHeight() - FONT_HEIGHT_SMALL - 4, statusLine);
 }
 
+void Screen::drawToneGeneratorFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+{
+    auto *self = static_cast<Screen *>(state->userData);
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
+    display->setFont(FONT_MEDIUM);
+    display->drawString(x + display->getWidth() / 2, y, "TONE GENERATOR");
+
+    // Show frequency in segmented style similar to battery meter.
+    String freqString = String(self->toneGeneratorFrequencyHz);
+    float scale = 1.2f;
+    uint16_t segmentWidth = SEGMENT_WIDTH * scale;
+    uint16_t segmentHeight = SEGMENT_HEIGHT * scale;
+    uint16_t totalWidth = 0;
+    for (uint8_t i = 0; i < freqString.length(); i++) {
+        totalWidth += segmentWidth + (segmentHeight * 2) + 4 + 5;
+    }
+    uint16_t drawX = (display->getWidth() / 2) - (totalWidth / 2);
+    uint16_t drawY = (display->getHeight() / 2) - (((segmentWidth * 2) + (segmentHeight * 3) + 8) / 2);
+
+    for (uint8_t i = 0; i < freqString.length(); i++) {
+        String character = String(freqString[i]);
+        uint8_t digit = character.toInt();
+        self->drawSegmentedDisplayCharacter(display, drawX, drawY, digit, scale);
+        drawX += segmentWidth + (segmentHeight * 2) + 4 + 5;
+    }
+
+    display->setFont(FONT_MEDIUM);
+    display->drawString(drawX + 10, drawY + segmentHeight * 2, "Hz");
+
+    display->setFont(FONT_SMALL);
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
+    const char *playState = self->toneGeneratorPlaying ? "Playing" : "Stopped";
+    char statusLine[64];
+    snprintf(statusLine, sizeof(statusLine), "%s  |  Tap=Play/Stop  Up/Down=+/-50  Right=Play  Left=Back", playState);
+    display->drawString(x + display->getWidth() / 2, y + display->getHeight() - FONT_HEIGHT_SMALL - 2, statusLine);
+}
+
 void Screen::drawHorizontalSegment(OLEDDisplay *display, int x, int y, int width, int height)
 {
     int halfHeight = height / 2;
@@ -1507,9 +1548,6 @@ float Screen::estimatedHeading(double lat, double lon)
     return b;
 }
 
-/// We will skip one node - the one for us, so we just blindly loop over all
-/// nodes
-static size_t nodeIndex;
 static int8_t prevFrame = -1;
 
 // Draw the arrow pointing to a node's location
@@ -2330,6 +2368,11 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
                             buttonY + buttonHeight + FONT_HEIGHT_SMALL + 4,
                             self->detonateStatus.c_str());
         display->setTextAlignment(TEXT_ALIGN_CENTER);
+        return;
+    }
+
+    if (self->secretMenuMode == SecretMenuMode::ToneGenerator) {
+        self->drawToneGeneratorFrame(display, state, x, y);
         return;
     }
 
@@ -3703,6 +3746,8 @@ void Screen::hideSecretMenu()
     secretMenuVisible = false;
     if (secretMenuMode == SecretMenuMode::Detonate)
         exitDetonateMode();
+    if (secretMenuMode == SecretMenuMode::ToneGenerator)
+        stopToneGeneratorMode();
     secretMenuMode = SecretMenuMode::Root;
     wifiAttackSelection = 0;
     wifiScanInProgress = false;
@@ -3740,12 +3785,12 @@ void Screen::handleSecretMenuSelection()
             enterDetonateMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == stationBrowserMenuIndex) {
-            showStationBrowser();
-        } else if (secretMenuSelection == detonateMenuIndex) {
-            enterDetonateMode();
+        } else if (secretMenuSelection == toneGeneratorMenuIndex) {
+            startToneGeneratorMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
+        } else if (secretMenuSelection == stationBrowserMenuIndex) {
+            showStationBrowser();
         } else if (secretMenuSelection == batteryMenuIndex) {
             startBattMeterMode();
             hideSecretMenu();
@@ -3828,6 +3873,53 @@ void Screen::startBattMeterMode()
     }
     battMeterActive = true;
     setFrames(FOCUS_BATTMETER);
+}
+
+void Screen::startToneGeneratorMode()
+{
+    // Stop detonate/batt meter mesh activity while using tone generator.
+    if (detonateModeActive)
+        exitDetonateMode();
+    if (battMeterActive)
+        stopBattMeterMode();
+
+    toneGeneratorActive = true;
+    toneGeneratorPlaying = false;
+    toneGeneratorFrequencyHz = 2600;
+    stopTonePlayback();
+    secretMenuMode = SecretMenuMode::ToneGenerator;
+    setFrames(FOCUS_SECRET);
+}
+
+void Screen::stopToneGeneratorMode()
+{
+    stopTonePlayback();
+    toneGeneratorActive = false;
+    secretMenuMode = SecretMenuMode::Root;
+}
+
+void Screen::playToneOnce()
+{
+    if (!toneGeneratorActive)
+        return;
+    audio::toneOutputPlay(toneGeneratorFrequencyHz);
+    toneGeneratorPlaying = true;
+}
+
+void Screen::stopTonePlayback()
+{
+    audio::toneOutputStop();
+    toneGeneratorPlaying = false;
+}
+
+void Screen::toggleTonePlayback()
+{
+    if (!toneGeneratorActive)
+        return;
+    if (toneGeneratorPlaying)
+        stopTonePlayback();
+    else
+        playToneOnce();
 }
 
 void Screen::startWiFiAttackTool(size_t attackIndex)
@@ -4182,6 +4274,46 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         }
     };
 
+    auto handleToneGeneratorNav = [this](char inputEvent) -> bool {
+        auto clampFreq = [](int freq) {
+            if (freq < 50)
+                return 50;
+            if (freq > 10000)
+                return 10000;
+            return freq;
+        };
+        switch (inputEvent) {
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_UP):
+            toneGeneratorFrequencyHz = clampFreq(static_cast<int>(toneGeneratorFrequencyHz) + 50);
+            setFastFramerate();
+            return true;
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_DOWN):
+            toneGeneratorFrequencyHz = clampFreq(static_cast<int>(toneGeneratorFrequencyHz) - 50);
+            setFastFramerate();
+            return true;
+        // TouchScreenImpl1 maps physical swipes horizontally inverted.
+        // Physical right -> LEFT event; physical left -> RIGHT event.
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_LEFT):
+            playToneOnce(); // physical right swipe plays the tone momentarily
+            setFastFramerate();
+            return true;
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_SELECT):
+            toggleTonePlayback();
+            setFastFramerate();
+            return true;
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL):
+            // Physical left swipe exits back to clock.
+            stopToneGeneratorMode();
+            hideSecretMenu();
+            setFastFramerate();
+            return true;
+        default:
+            return true;
+        }
+    };
+
     if (secretMenuMode == SecretMenuMode::WifiAttacks)
         return handleWifiAttackNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::WifiScanner)
@@ -4192,6 +4324,8 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         return handleStationStaNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::Detonate)
         return handleDetonateNav(inputEvent);
+    if (secretMenuMode == SecretMenuMode::ToneGenerator)
+        return handleToneGeneratorNav(inputEvent);
 
     switch (inputEvent) {
     case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_UP):
