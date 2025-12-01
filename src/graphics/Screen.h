@@ -737,6 +737,7 @@ class Screen : public concurrency::OSThread
       uint8_t wifiAttackSelection = 0;
     uint32_t secretGestureStartMs = 0;
     bool battMeterActive = false;
+    bool battMeterUnlocked = false;
     bool detonateModeActive = false;
     bool battNetworkWasActive = false;
     bool detonateConnected = false;
