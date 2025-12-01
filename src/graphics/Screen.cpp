@@ -638,27 +638,25 @@ void Screen::drawBatteryMeterButton(OLEDDisplay *display, int16_t x, int16_t y, 
 // Draw a digital clock
 void Screen::drawDigitalClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
 {
-    Screen *self = static_cast<Screen *>(state->userData);
-
     display->setTextAlignment(TEXT_ALIGN_LEFT);
 
     drawBattery(display, x, y + 7, imgBattery, powerStatus);
 
-    if (self && self->battMeterActive) {
-        if (powerStatus->getHasBattery()) {
-            String batteryPercent = String(powerStatus->getBatteryChargePercent()) + "%";
-            display->setFont(FONT_SMALL);
-            display->drawString(x + 20, y + 2, batteryPercent);
-        }
+    if (powerStatus->getHasBattery()) {
+        String batteryPercent = String(powerStatus->getBatteryChargePercent()) + "%";
 
-        if (nimbleBluetooth && nimbleBluetooth->isConnected()) {
-            drawBluetoothConnectedIcon(display, display->getWidth() - 18, y + 2);
-        }
+        display->setFont(FONT_SMALL);
 
-        int batteryButtonPercent = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastPercent() : -1;
-        drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, LowerRightButtonMode::BatteryPercent,
-                               batteryButtonPercent, 1);
+        display->drawString(x + 20, y + 2, batteryPercent);
     }
+
+    if (nimbleBluetooth && nimbleBluetooth->isConnected()) {
+        drawBluetoothConnectedIcon(display, display->getWidth() - 18, y + 2);
+    }
+
+    int batteryButtonPercent = (battMeterClient && battMeterClient->hasReading()) ? battMeterClient->getLastPercent() : -1;
+    drawBatteryMeterButton(display, display->getWidth() - 36, display->getHeight() - 36, LowerRightButtonMode::BatteryPercent,
+                           batteryButtonPercent, 1);
 
     display->setColor(OLEDDISPLAY_COLOR::WHITE);
 
@@ -4612,7 +4610,6 @@ int Screen::handleInputEvent(const InputEvent *event)
 
     if (touchedBatteryButton) {
         if (this->ui->getUiState()->currentFrame == watchFaceFrame) {
-            startBattMeterMode();
             updateSecretGestureProgress(event->inputEvent);
             return 0;
         }
