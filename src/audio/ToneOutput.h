@@ -12,6 +12,6 @@ namespace audio
  */
 void toneOutputPlay(uint32_t frequencyHz);
 void toneOutputStop();
+void toneOutputReset();
 
 } // namespace audio
-

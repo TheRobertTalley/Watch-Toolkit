@@ -126,40 +126,56 @@ std::string functionSymbolString = "";
 #if HAS_SCREEN
 namespace
 {
-enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, Detonate, BatteryMeter, ToneGenerator, DbMeter, MsdCalculator, Count };
-static const char *const secretMenuItems[] = {
+enum struct SecretMenuEntry : size_t { TvBGone, MsdCalculator, PactTimer, Detonate, BatteryMeter, WifiAttacks, WifiScanner, StationBrowser, ToneGenerator, DbMeter, Count };
+
+// Order the visible tools explicitly to match the on-device carousel.
+constexpr std::array<SecretMenuEntry, static_cast<size_t>(SecretMenuEntry::Count)> secretMenuOrder = {
+    SecretMenuEntry::TvBGone,
+    SecretMenuEntry::MsdCalculator,
+    SecretMenuEntry::PactTimer,
+    SecretMenuEntry::Detonate,
+    SecretMenuEntry::BatteryMeter,
+    SecretMenuEntry::WifiAttacks,
+    SecretMenuEntry::WifiScanner,
+    SecretMenuEntry::StationBrowser,
+    SecretMenuEntry::ToneGenerator,
+    SecretMenuEntry::DbMeter};
+
+constexpr std::array<const char *, static_cast<size_t>(SecretMenuEntry::Count)> secretMenuItemNames = {
     "TV B Gone",
+    "MSD Calculator",
+    "PACT Timer",
+    "Detonate",
+    "Battery Meter",
     "WiFi Attacks",
     "WiFi Scanner",
     "Station Browser",
-    "Detonate",
-    "Battery Meter",
     "Tone Generator",
-    "DB Meter",
-    "MSD Calculator"};
-constexpr size_t secretMenuItemCount = static_cast<size_t>(SecretMenuEntry::Count);
-constexpr size_t tvBGoneMenuIndex = static_cast<size_t>(SecretMenuEntry::TvBGone);
-constexpr size_t wifiAttacksMenuIndex = static_cast<size_t>(SecretMenuEntry::WifiAttacks);
-constexpr size_t wifiScannerMenuIndex = static_cast<size_t>(SecretMenuEntry::WifiScanner);
-constexpr size_t stationBrowserMenuIndex = static_cast<size_t>(SecretMenuEntry::StationBrowser);
-constexpr size_t detonateMenuIndex = static_cast<size_t>(SecretMenuEntry::Detonate);
-constexpr size_t batteryMenuIndex = static_cast<size_t>(SecretMenuEntry::BatteryMeter);
-constexpr size_t toneGeneratorMenuIndex = static_cast<size_t>(SecretMenuEntry::ToneGenerator);
-constexpr size_t dbMeterMenuIndex = static_cast<size_t>(SecretMenuEntry::DbMeter);
-constexpr size_t msdCalculatorMenuIndex = static_cast<size_t>(SecretMenuEntry::MsdCalculator);
-constexpr size_t secretMenuAnchorIndex = batteryMenuIndex; // keep anchor aligned with old battery/device location
+    "DB Meter"};
+constexpr size_t secretMenuItemCount = secretMenuOrder.size();
 
 constexpr size_t wifiAttackItemCount = marauder::kWifiAttackItemCount;
 constexpr size_t wifiAttackVisibleCount = 6;
 
+static SecretMenuEntry selectedSecretMenuEntry(size_t selection)
+{
+    return secretMenuOrder[selection % secretMenuItemCount];
+}
+
+static const char *secretMenuItemName(SecretMenuEntry entry)
+{
+    return secretMenuItemNames[static_cast<size_t>(entry)];
+}
+
 static std::string secretMenuItemLabel(size_t index)
 {
-    std::string label = secretMenuItems[index];
-        if (tvBGone && index == tvBGoneMenuIndex && tvBGone->isActive()) {
-            label = "*" + label + "*";
-        }
-        return label;
+    SecretMenuEntry entry = selectedSecretMenuEntry(index);
+    std::string label = secretMenuItemName(entry);
+    if (tvBGone && entry == SecretMenuEntry::TvBGone && tvBGone->isActive()) {
+        label = "*" + label + "*";
     }
+    return label;
+}
 
 // TouchScreenImpl1 maps physical swipes horizontally inverted (swipe left -> InputEventChar_RIGHT).
 // Adjust the gesture sequence to match the physical pattern: up, down, left, right, right, left, down, up.
@@ -254,6 +270,11 @@ constexpr int dbMicDataPin = 47;
 constexpr int dbMicClkPin = -1;
 constexpr int dbMicDataPin = -1;
 #endif
+constexpr uint32_t pactCountdownMs = 3000;
+constexpr uint32_t pactBeepDurationMs = 180;
+constexpr uint32_t pactShotMinGapMs = 85;
+constexpr float pactShotThresholdDbfs = -18.0f;
+constexpr size_t pactSplitsPerPage = 5;
 } // namespace
 #endif
 
@@ -1004,8 +1025,141 @@ void Screen::drawDbMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, i
         uint32_t ageMs = millis() - self->dbMeterLastUpdateMs;
         char status[32];
         snprintf(status, sizeof(status), "Updated %lums ago", static_cast<unsigned long>(ageMs));
-        display->drawString(x + display->getWidth() / 2, statusY, status);
+    display->drawString(x + display->getWidth() / 2, statusY, status);
     }
+}
+
+void Screen::drawPactTimerFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+{
+    auto *self = static_cast<Screen *>(state->userData);
+    const uint32_t now = millis();
+    const bool recording = self->pactTimerRecording;
+    const bool arming = self->pactTimerArming;
+    const bool beeping = self->pactTimerBeepActive;
+    const bool hasShots = !self->pactShotTimesMs.empty();
+    const size_t shotCount = self->pactShotTimesMs.size();
+    const bool showButton = self->pactTimerStartVisible && !(arming || beeping || recording);
+
+    int16_t width = display->getWidth();
+    int16_t height = display->getHeight();
+
+    display->setColor(BLACK);
+    display->fillRect(x, y, width, height);
+    display->setColor(WHITE);
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
+
+    display->setFont(FONT_MEDIUM);
+    display->drawString(x + width / 2, y, "PACT TIMER");
+
+    display->setFont(FONT_SMALL);
+    char statusLine[64];
+    if (arming) {
+        uint32_t remaining = (self->pactTimerArmingStartMs + pactCountdownMs > now) ?
+                                 (self->pactTimerArmingStartMs + pactCountdownMs - now) :
+                                 0;
+        uint32_t remSec = (remaining + 999) / 1000;
+        if (remSec == 0)
+            remSec = 1;
+        snprintf(statusLine, sizeof(statusLine), "Standby... %lus", static_cast<unsigned long>(remSec));
+    } else if (beeping) {
+        snprintf(statusLine, sizeof(statusLine), "Start");
+    } else if (recording) {
+        float elapsed = static_cast<float>(now - self->pactTimerStringStartMs) / 1000.0f;
+        const char *recordStatus = self->pactTimerStatus.empty() ? "Time" : self->pactTimerStatus.c_str();
+        snprintf(statusLine, sizeof(statusLine), "%s %.2fs", recordStatus, elapsed);
+    } else if (self->pactTimerHasResult && hasShots) {
+        float total = static_cast<float>(self->pactTimerTotalMs) / 1000.0f;
+        snprintf(statusLine, sizeof(statusLine), "Last Volly: %.2fs (%u)", total, static_cast<unsigned>(shotCount));
+    } else if (!self->pactTimerAvailable) {
+        snprintf(statusLine, sizeof(statusLine), "Mic unavailable - manual mode");
+    } else if (!self->pactTimerStatus.empty()) {
+        snprintf(statusLine, sizeof(statusLine), "%s", self->pactTimerStatus.c_str());
+    } else {
+        snprintf(statusLine, sizeof(statusLine), "Tap start for 3s delay");
+    }
+    int16_t statusY = y + FONT_HEIGHT_SMALL + 4;
+    display->drawString(x + width / 2, statusY, statusLine);
+
+    int16_t contentTop = statusY + FONT_HEIGHT_SMALL + 6;
+
+    if (showButton) {
+        int16_t buttonWidth = width - 24;
+        int16_t buttonHeight = height / 2;
+        int16_t buttonX = x + (width - buttonWidth) / 2;
+        int16_t buttonY = contentTop;
+        if (buttonY + buttonHeight > (y + height - (FONT_HEIGHT_SMALL + 20)))
+            buttonY = y + (height - buttonHeight) / 2;
+
+        display->setTextAlignment(TEXT_ALIGN_CENTER);
+        display->drawRect(buttonX, buttonY, buttonWidth, buttonHeight);
+        display->setFont(FONT_LARGE);
+        display->drawString(buttonX + buttonWidth / 2,
+                            buttonY + buttonHeight / 2 - FONT_HEIGHT_LARGE / 2,
+                            "START");
+        display->setFont(FONT_SMALL);
+        display->drawString(buttonX + buttonWidth / 2,
+                            buttonY + buttonHeight / 2 + FONT_HEIGHT_SMALL,
+                            "3s delay");
+
+        contentTop = buttonY + buttonHeight + 6;
+    }
+
+    display->setFont(FONT_SMALL);
+    char summary[64];
+    if (recording) {
+        float elapsed = static_cast<float>(now - self->pactTimerStringStartMs) / 1000.0f;
+        snprintf(summary, sizeof(summary), "Time %.2fs  Shots %u", elapsed, static_cast<unsigned>(shotCount));
+    } else if (hasShots) {
+        float total = static_cast<float>(self->pactTimerTotalMs) / 1000.0f;
+        snprintf(summary, sizeof(summary), "Total %.2fs  Shots %u", total, static_cast<unsigned>(shotCount));
+    } else {
+        snprintf(summary, sizeof(summary), "Splits will appear after first shot");
+    }
+    int16_t summaryY = contentTop;
+    if (summaryY + FONT_HEIGHT_SMALL + 2 >= y + height - (FONT_HEIGHT_SMALL + 8))
+        summaryY = y + height - (FONT_HEIGHT_SMALL + 10);
+    display->drawString(x + width / 2, summaryY, summary);
+
+    if (hasShots) {
+        size_t rows = showButton ? 3 : pactSplitsPerPage;
+        size_t maxOffset = (shotCount > rows) ? (shotCount - rows) : 0;
+        if (self->pactTimerSplitOffset > maxOffset)
+            self->pactTimerSplitOffset = maxOffset;
+
+        display->setTextAlignment(TEXT_ALIGN_LEFT);
+        int16_t listY = summaryY + FONT_HEIGHT_SMALL + 2;
+        for (size_t i = 0; i < rows; ++i) {
+            size_t idx = self->pactTimerSplitOffset + i;
+            if (idx >= shotCount)
+                break;
+            uint32_t current = self->pactShotTimesMs[idx];
+            uint32_t prev = (idx == 0) ? 0 : self->pactShotTimesMs[idx - 1];
+            float splitSec = static_cast<float>(current - prev) / 1000.0f;
+            float shotSec = static_cast<float>(current) / 1000.0f;
+            char line[48];
+            snprintf(line, sizeof(line), "%u) %.2fs  (+%.2f)",
+                     static_cast<unsigned>(idx + 1),
+                     shotSec,
+                     splitSec);
+            display->drawString(x + 6, listY, line);
+            listY += FONT_HEIGHT_SMALL + 2;
+        }
+        display->setTextAlignment(TEXT_ALIGN_CENTER);
+    }
+
+    const char *instructions;
+    if (recording || arming || beeping) {
+        instructions = "Tap=Stop  Right=+Shot  Left=Back";
+    } else if (hasShots && !showButton) {
+        instructions = "Hold Left=Reset  Up/Down=Scroll";
+    } else if (hasShots) {
+        instructions = "Tap=Start  Up/Down=Scroll  Left=Back";
+    } else if (!self->pactTimerAvailable) {
+        instructions = "Tap=Start  Right=+Shot  Left=Back";
+    } else {
+        instructions = "Tap=Start  Left=Back";
+    }
+    display->drawString(x + width / 2, y + height - (FONT_HEIGHT_SMALL + 2), instructions);
 }
 
 void Screen::drawHorizontalSegment(OLEDDisplay *display, int x, int y, int width, int height)
@@ -1922,6 +2076,7 @@ Screen::Screen(ScanI2C::DeviceAddress address, meshtastic_Config_DisplayConfig_O
 
 #if defined(T_WATCH_S3)
     dbMeterAvailable = true;
+    pactTimerAvailable = true;
 #endif
 }
 
@@ -2349,6 +2504,7 @@ int32_t Screen::runOnce()
 #if HAS_WIFI
     msdCalculatorServer.loop();
 #endif
+    updatePactTimer();
     return (1000 / targetFramerate);
 }
 
@@ -2445,6 +2601,11 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
                             buttonY + buttonHeight + FONT_HEIGHT_SMALL + 4,
                             self->detonateStatus.c_str());
         display->setTextAlignment(TEXT_ALIGN_CENTER);
+        return;
+    }
+
+    if (self->secretMenuMode == SecretMenuMode::PactTimer) {
+        self->drawPactTimerFrame(display, state, x, y);
         return;
     }
 
@@ -3978,6 +4139,8 @@ void Screen::hideSecretMenu()
         stopMsdCalculatorMode();
     if (secretMenuMode == SecretMenuMode::DbMeter)
         stopDbMeterMode();
+    if (secretMenuMode == SecretMenuMode::PactTimer)
+        stopPactTimerMode();
     secretMenuMode = SecretMenuMode::Root;
     wifiAttackSelection = 0;
     wifiScanInProgress = false;
@@ -3993,47 +4156,64 @@ void Screen::hideSecretMenu()
 void Screen::handleSecretMenuSelection()
 {
     if (secretMenuMode == SecretMenuMode::Root) {
-        if (secretMenuSelection == tvBGoneMenuIndex) {
+        SecretMenuEntry entry = selectedSecretMenuEntry(secretMenuSelection);
+        switch (entry) {
+        case SecretMenuEntry::TvBGone:
             if (tvBGone && tvBGone->isActive()) {
                 stopTvBGoneTool();
             } else {
                 startTvBGoneTool();
                 hideSecretMenu();
             }
-        } else if (secretMenuSelection == wifiAttacksMenuIndex) {
+            break;
+        case SecretMenuEntry::WifiAttacks:
             secretMenuMode = SecretMenuMode::WifiAttacks;
             wifiAttackSelection = 0;
             setFastFramerate();
             setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == wifiScannerMenuIndex) {
+            break;
+        case SecretMenuEntry::WifiScanner:
             secretMenuMode = SecretMenuMode::WifiScanner;
             wifiScanSelection = 0;
             startWifiScanList();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == detonateMenuIndex) {
+            break;
+        case SecretMenuEntry::Detonate:
             enterDetonateMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == toneGeneratorMenuIndex) {
+            break;
+        case SecretMenuEntry::ToneGenerator:
             startToneGeneratorMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == dbMeterMenuIndex) {
+            break;
+        case SecretMenuEntry::DbMeter:
             startDbMeterMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == msdCalculatorMenuIndex) {
+            break;
+        case SecretMenuEntry::PactTimer:
+            startPactTimerMode();
+            setFastFramerate();
+            setFrames(FOCUS_SECRET);
+            break;
+        case SecretMenuEntry::MsdCalculator:
             startMsdCalculatorMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
-        } else if (secretMenuSelection == stationBrowserMenuIndex) {
+            break;
+        case SecretMenuEntry::StationBrowser:
             showStationBrowser();
-        } else if (secretMenuSelection == batteryMenuIndex) {
+            break;
+        case SecretMenuEntry::BatteryMeter:
             startBattMeterMode();
             hideSecretMenu();
-        } else {
-            LOG_INFO("Toolkit entry \"%s\" not implemented yet", secretMenuItems[secretMenuSelection]);
+            break;
+        default:
+            LOG_INFO("Toolkit entry \"%s\" not implemented yet", secretMenuItemName(entry));
+            break;
         }
     } else if (secretMenuMode == SecretMenuMode::WifiAttacks) {
         startWiFiAttackTool(wifiAttackSelection);
@@ -4247,6 +4427,247 @@ void Screen::stopDbMeterMode()
 #endif
     dbMeterActive = false;
     secretMenuMode = SecretMenuMode::Root;
+}
+
+void Screen::startPactTimerMode()
+{
+    if (detonateModeActive)
+        exitDetonateMode();
+    if (battMeterActive)
+        stopBattMeterMode();
+    if (toneGeneratorActive)
+        stopToneGeneratorMode();
+    if (dbMeterActive)
+        stopDbMeterMode();
+
+    pactTimerSplitOffset = 0;
+    pactTimerArming = false;
+    pactTimerBeepActive = false;
+    pactTimerRecording = false;
+    pactTimerMicReady = false;
+    pactTimerLastPeakDbfs = -90.0f;
+    pactTimerStartVisible = true;
+    if (!pactTimerHasResult)
+        pactTimerStatus.clear();
+    secretMenuMode = SecretMenuMode::PactTimer;
+}
+
+void Screen::stopPactTimerMode(bool clearResult)
+{
+    audio::toneOutputStop();
+    audio::toneOutputReset();
+    stopPactMic();
+    pactTimerArming = false;
+    pactTimerBeepActive = false;
+    if (pactTimerRecording && !pactShotTimesMs.empty())
+        pactTimerTotalMs = pactShotTimesMs.back();
+    pactTimerRecording = false;
+    pactTimerMicReady = false;
+    pactTimerSplitOffset = 0;
+    pactTimerStartVisible = false;
+    if (clearResult) {
+        pactShotTimesMs.clear();
+        pactTimerHasResult = false;
+        pactTimerTotalMs = 0;
+        pactTimerStatus.clear();
+    } else if (!pactShotTimesMs.empty()) {
+        pactTimerHasResult = true;
+        pactTimerTotalMs = pactShotTimesMs.back();
+    } else {
+        pactTimerTotalMs = 0;
+    }
+    pactTimerStartVisible = !pactTimerHasResult;
+    if (pactShotTimesMs.empty() && !pactTimerHasResult && !clearResult)
+        pactTimerStatus = "No shots captured";
+}
+
+void Screen::beginPactCountdown()
+{
+    audio::toneOutputStop();
+    audio::toneOutputReset();
+    stopPactMic(); // free I2S for speaker beep
+    pactShotTimesMs.clear();
+    pactTimerSplitOffset = 0;
+    pactTimerTotalMs = 0;
+    pactTimerHasResult = false;
+    pactTimerArming = true;
+    pactTimerBeepActive = false;
+    pactTimerRecording = false;
+    pactTimerMicReady = false;
+    pactTimerStartVisible = !pactTimerHasResult;
+    pactTimerArmingStartMs = millis();
+    pactTimerLastShotAbsMs = 0;
+    pactTimerStatus = pactTimerAvailable ? "Standby..." : "Manual mode (Right adds)";
+}
+
+void Screen::finalizePactString()
+{
+    audio::toneOutputStop();
+    stopPactMic();
+    pactTimerTotalMs = pactShotTimesMs.empty() ? 0 : pactShotTimesMs.back();
+    pactTimerArming = false;
+    pactTimerBeepActive = false;
+    pactTimerRecording = false;
+    pactTimerMicReady = false;
+    pactTimerHasResult = !pactShotTimesMs.empty();
+    pactTimerStartVisible = !pactTimerHasResult;
+    if (pactTimerHasResult)
+        pactTimerStatus = "String saved";
+    else
+        pactTimerStatus = "No shots captured";
+}
+
+void Screen::addPactShotManual()
+{
+    if (!pactTimerRecording)
+        return;
+    uint32_t now = millis();
+    if (pactTimerLastShotAbsMs != 0 && (now - pactTimerLastShotAbsMs) < pactShotMinGapMs)
+        return;
+    uint32_t shotMs = now - pactTimerStringStartMs;
+    pactShotTimesMs.push_back(shotMs);
+    pactTimerLastShotAbsMs = now;
+    pactTimerHasResult = true;
+    pactTimerStatus = "Manual shot added";
+    if (pactShotTimesMs.size() > pactSplitsPerPage)
+        pactTimerSplitOffset = pactShotTimesMs.size() - pactSplitsPerPage;
+}
+
+bool Screen::ensurePactMicReady()
+{
+#if defined(ARCH_ESP32) && (dbMicClkPin >= 0) && (dbMicDataPin >= 0)
+    if (!pactTimerAvailable)
+        return false;
+    if (pactTimerMicReady)
+        return true;
+
+    i2s_config_t cfg = {};
+    cfg.mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM);
+    cfg.sample_rate = 16000;
+    cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+    cfg.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+    cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+    cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+    cfg.dma_buf_count = 4;
+    cfg.dma_buf_len = 256;
+    cfg.use_apll = false;
+    cfg.tx_desc_auto_clear = false;
+    cfg.fixed_mclk = 0;
+
+    i2s_pin_config_t pins = {};
+    pins.bck_io_num = I2S_PIN_NO_CHANGE;
+    pins.ws_io_num = dbMicClkPin;
+    pins.data_out_num = I2S_PIN_NO_CHANGE;
+    pins.data_in_num = dbMicDataPin;
+
+    if (i2s_driver_install(I2S_NUM_0, &cfg, 0, nullptr) != ESP_OK) {
+        pactTimerStatus = "Mic init failed";
+        pactTimerMicReady = false;
+        pactTimerAvailable = false;
+        return false;
+    }
+    if (i2s_set_pin(I2S_NUM_0, &pins) != ESP_OK ||
+        i2s_set_clk(I2S_NUM_0, 16000, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO) != ESP_OK) {
+        pactTimerStatus = "Mic pin/clks failed";
+        i2s_driver_uninstall(I2S_NUM_0);
+        pactTimerMicReady = false;
+        pactTimerAvailable = false;
+        return false;
+    }
+    pactTimerMicReady = true;
+    return true;
+#else
+    pactTimerAvailable = false;
+    return false;
+#endif
+}
+
+void Screen::stopPactMic()
+{
+#if defined(ARCH_ESP32)
+    if (pactTimerMicReady)
+        i2s_driver_uninstall(I2S_NUM_0);
+#endif
+    pactTimerMicReady = false;
+    audio::toneOutputReset();
+}
+
+void Screen::updatePactTimer()
+{
+    if (!(pactTimerArming || pactTimerBeepActive || pactTimerRecording))
+        return;
+
+    const uint32_t now = millis();
+
+    if (pactTimerArming && !pactTimerBeepActive) {
+        if ((now - pactTimerArmingStartMs) >= pactCountdownMs) {
+            pactTimerArming = false;
+            pactTimerBeepActive = true;
+            pactTimerBeepEndMs = now + pactBeepDurationMs;
+            pactTimerStatus = "Start";
+            stopPactMic();          // Free I2S for the speaker
+            audio::toneOutputStop();
+            audio::toneOutputReset();
+            delay(15);
+            audio::toneOutputPlay(3500);
+        }
+    }
+
+    if (pactTimerBeepActive && now >= pactTimerBeepEndMs) {
+        audio::toneOutputStop();
+        audio::toneOutputReset();
+        pactTimerBeepActive = false;
+        pactTimerRecording = true;
+        pactTimerStringStartMs = now;
+        pactTimerLastShotAbsMs = 0;
+        pactTimerStatus = pactTimerAvailable ? "Time" : "Manual mode (Right adds)";
+        ensurePactMicReady();
+    }
+
+    if (!pactTimerRecording)
+        return;
+
+#if defined(ARCH_ESP32) && (dbMicClkPin >= 0) && (dbMicDataPin >= 0)
+    if (!pactTimerAvailable)
+        return;
+    if (!ensurePactMicReady())
+        return;
+
+    static int16_t samples[256];
+    size_t bytesRead = 0;
+    esp_err_t err = i2s_read(I2S_NUM_0, samples, sizeof(samples), &bytesRead, 5 / portTICK_PERIOD_MS);
+    if (err != ESP_OK || bytesRead == 0)
+        return;
+
+    size_t count = bytesRead / sizeof(int16_t);
+    int16_t peak = 0;
+    for (size_t i = 0; i < count; ++i) {
+        int16_t s = samples[i];
+        if (s < 0)
+            s = -s;
+        if (s > peak)
+            peak = s;
+    }
+    float norm = static_cast<float>(peak) / 32768.0f;
+    if (norm < 1e-6f)
+        norm = 1e-6f;
+    pactTimerLastPeakDbfs = 20.0f * log10f(norm);
+
+    if (pactTimerLastPeakDbfs >= pactShotThresholdDbfs) {
+        if (pactTimerLastShotAbsMs == 0 || (now - pactTimerLastShotAbsMs) >= pactShotMinGapMs) {
+            uint32_t shotMs = now - pactTimerStringStartMs;
+            pactShotTimesMs.push_back(shotMs);
+            pactTimerLastShotAbsMs = now;
+            pactTimerHasResult = true;
+            pactTimerStatus = "Shot detected";
+            if (pactShotTimesMs.size() > pactSplitsPerPage)
+                pactTimerSplitOffset = pactShotTimesMs.size() - pactSplitsPerPage;
+            setFastFramerate();
+        }
+    }
+#else
+    (void)now;
+#endif
 }
 
 void Screen::startMsdCalculatorMode()
@@ -4710,6 +5131,81 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         }
     };
 
+    auto handlePactTimerNav = [this](char inputEvent) -> bool {
+        switch (inputEvent) {
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_SELECT):
+            if (pactTimerRecording || pactTimerArming || pactTimerBeepActive) {
+                finalizePactString();
+            } else if (!pactTimerStartVisible) {
+                // Ignore taps when the start button is hidden (e.g., viewing stats)
+                setFastFramerate();
+                return true;
+            } else {
+                beginPactCountdown();
+            }
+            setFastFramerate();
+            return true;
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_LEFT):
+            addPactShotManual(); // physical right swipe
+            setFastFramerate();
+            return true;
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_UP): {
+            if (!(pactTimerRecording || pactTimerArming || pactTimerBeepActive) && !pactShotTimesMs.empty()) {
+                if (pactTimerSplitOffset > 0)
+                    pactTimerSplitOffset--;
+            }
+            setFastFramerate();
+            return true;
+        }
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_DOWN): {
+            if (!(pactTimerRecording || pactTimerArming || pactTimerBeepActive) && !pactShotTimesMs.empty()) {
+                size_t shotCount = pactShotTimesMs.size();
+                size_t maxOffset = (shotCount > pactSplitsPerPage) ? shotCount - pactSplitsPerPage : 0;
+                if (pactTimerSplitOffset < maxOffset)
+                    pactTimerSplitOffset++;
+            }
+            setFastFramerate();
+            return true;
+        }
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL):
+            if (pactTimerRecording || pactTimerArming || pactTimerBeepActive) {
+                stopPactTimerMode(false);
+                secretMenuMode = SecretMenuMode::Root;
+                setFrames(FOCUS_SECRET);
+            } else if (pactTimerHasResult && inputEvent == static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL)) {
+                // Treat CANCEL as a long-press reset back to the start screen
+                stopPactTimerMode(true);
+                pactTimerArming = false;
+                pactTimerBeepActive = false;
+                pactTimerRecording = false;
+                stopPactMic();
+                audio::toneOutputStop();
+                audio::toneOutputReset();
+                pactTimerHasResult = false;
+                pactTimerSplitOffset = 0;
+                pactTimerTotalMs = 0;
+                pactTimerStartVisible = true;
+                pactTimerStatus.clear();
+                secretMenuMode = SecretMenuMode::PactTimer;
+                setFrames(FOCUS_SECRET);
+            } else if (pactTimerHasResult) {
+                // Short press: keep stats on-screen, leave start hidden
+                stopPactTimerMode(false);
+                setFrames(FOCUS_SECRET);
+            } else {
+                stopPactTimerMode(true);
+                secretMenuMode = SecretMenuMode::Root;
+                setFrames(FOCUS_SECRET);
+            }
+            setFastFramerate();
+            return true;
+        default:
+            return true;
+        }
+    };
+
     if (secretMenuMode == SecretMenuMode::WifiAttacks)
         return handleWifiAttackNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::WifiScanner)
@@ -4724,6 +5220,8 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         return handleDbMeterNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::ToneGenerator)
         return handleToneGeneratorNav(inputEvent);
+    if (secretMenuMode == SecretMenuMode::PactTimer)
+        return handlePactTimerNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::MsdCalculator) {
         switch (inputEvent) {
         case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_LEFT):
@@ -4750,7 +5248,7 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         return true;
     case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_LEFT):
     case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_SELECT):
-        LOG_INFO("Secret menu selection: %s", secretMenuItems[secretMenuSelection]);
+        LOG_INFO("Secret menu selection: %s", secretMenuItemName(selectedSecretMenuEntry(secretMenuSelection)));
         handleSecretMenuSelection();
         setFastFramerate();
         return true;

@@ -143,6 +143,16 @@ void toneOutputStop()
         i2s_zero_dma_buffer(kTonePort);
 }
 
+void toneOutputReset()
+{
+    tonePlaying = false;
+    if (i2sReady) {
+        i2s_zero_dma_buffer(kTonePort);
+        i2s_driver_uninstall(kTonePort);
+    }
+    i2sReady = false;
+}
+
 #else
 
 void toneOutputPlay(uint32_t frequencyHz)
@@ -157,6 +167,11 @@ void toneOutputStop()
     int32_t buzzerPin = static_cast<int32_t>(config.device.buzzer_gpio);
     if (buzzerPin >= 0)
         noTone(buzzerPin);
+}
+
+void toneOutputReset()
+{
+    toneOutputStop();
 }
 
 #endif

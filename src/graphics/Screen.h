@@ -657,6 +657,7 @@ class Screen : public concurrency::OSThread
     static void drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     static void drawToneGeneratorFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     static void drawDbMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+    static void drawPactTimerFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 
 #if defined(DISPLAY_CLOCK_FRAME)
     static void drawAnalogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
@@ -710,6 +711,14 @@ class Screen : public concurrency::OSThread
       void startDbMeterMode();
       void stopDbMeterMode();
       void updateDbMeterReading();
+      void startPactTimerMode();
+      void stopPactTimerMode(bool clearResult = false);
+      void beginPactCountdown();
+      void finalizePactString();
+      void addPactShotManual();
+      void updatePactTimer();
+      bool ensurePactMicReady();
+      void stopPactMic();
       void startMsdCalculatorMode();
       void stopMsdCalculatorMode();
       void toggleTonePlayback();
@@ -736,6 +745,7 @@ class Screen : public concurrency::OSThread
           Detonate,
           ToneGenerator,
           DbMeter,
+          PactTimer,
           MsdCalculator
       };
       SecretMenuMode secretMenuMode = SecretMenuMode::Root;
@@ -758,6 +768,22 @@ class Screen : public concurrency::OSThread
     float dbMeterMaxDbfs = -90.0f;
     uint32_t dbMeterLastUpdateMs = 0;
     std::string dbMeterStatus = "";
+    bool pactTimerAvailable = false;
+    bool pactTimerArming = false;
+    bool pactTimerBeepActive = false;
+    bool pactTimerRecording = false;
+    bool pactTimerMicReady = false;
+    bool pactTimerHasResult = false;
+    bool pactTimerStartVisible = true;
+    uint32_t pactTimerArmingStartMs = 0;
+    uint32_t pactTimerBeepEndMs = 0;
+    uint32_t pactTimerStringStartMs = 0;
+    uint32_t pactTimerLastShotAbsMs = 0;
+    uint32_t pactTimerTotalMs = 0;
+    float pactTimerLastPeakDbfs = -90.0f;
+    size_t pactTimerSplitOffset = 0;
+    std::vector<uint32_t> pactShotTimesMs;
+    std::string pactTimerStatus = "Ready";
     MsdCalculatorServer msdCalculatorServer;
     bool msdSummaryActive = false;
 
