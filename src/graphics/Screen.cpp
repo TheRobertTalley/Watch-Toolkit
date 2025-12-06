@@ -29,6 +29,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <array>
 #include <algorithm>
 #include <Arduino.h>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 
@@ -75,6 +76,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #ifdef ARCH_ESP32
 #include "esp_task_wdt.h"
 #include "modules/StoreForwardModule.h"
+#include "driver/i2s.h"
 #endif
 
 #if ARCH_PORTDUINO
@@ -124,7 +126,7 @@ std::string functionSymbolString = "";
 #if HAS_SCREEN
 namespace
 {
-enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, Detonate, BatteryMeter, ToneGenerator, MsdCalculator, Count };
+enum struct SecretMenuEntry : size_t { TvBGone, WifiAttacks, WifiScanner, StationBrowser, Detonate, BatteryMeter, ToneGenerator, DbMeter, MsdCalculator, Count };
 static const char *const secretMenuItems[] = {
     "TV B Gone",
     "WiFi Attacks",
@@ -133,6 +135,7 @@ static const char *const secretMenuItems[] = {
     "Detonate",
     "Battery Meter",
     "Tone Generator",
+    "DB Meter",
     "MSD Calculator"};
 constexpr size_t secretMenuItemCount = static_cast<size_t>(SecretMenuEntry::Count);
 constexpr size_t tvBGoneMenuIndex = static_cast<size_t>(SecretMenuEntry::TvBGone);
@@ -142,6 +145,7 @@ constexpr size_t stationBrowserMenuIndex = static_cast<size_t>(SecretMenuEntry::
 constexpr size_t detonateMenuIndex = static_cast<size_t>(SecretMenuEntry::Detonate);
 constexpr size_t batteryMenuIndex = static_cast<size_t>(SecretMenuEntry::BatteryMeter);
 constexpr size_t toneGeneratorMenuIndex = static_cast<size_t>(SecretMenuEntry::ToneGenerator);
+constexpr size_t dbMeterMenuIndex = static_cast<size_t>(SecretMenuEntry::DbMeter);
 constexpr size_t msdCalculatorMenuIndex = static_cast<size_t>(SecretMenuEntry::MsdCalculator);
 constexpr size_t secretMenuAnchorIndex = batteryMenuIndex; // keep anchor aligned with old battery/device location
 
@@ -242,6 +246,14 @@ static std::string macToString(const std::array<uint8_t, 6> &mac)
              mac[5]);
     return buf;
 }
+
+#if defined(T_WATCH_S3)
+constexpr int dbMicClkPin = 44;
+constexpr int dbMicDataPin = 47;
+#else
+constexpr int dbMicClkPin = -1;
+constexpr int dbMicDataPin = -1;
+#endif
 } // namespace
 #endif
 
@@ -941,6 +953,59 @@ void Screen::drawToneGeneratorFrame(OLEDDisplay *display, OLEDDisplayUiState *st
     char statusLine[64];
     snprintf(statusLine, sizeof(statusLine), "%s  |  Tap=Play/Stop  Up/Down=+/-50  Right=Play  Left=Back", playState);
     display->drawString(x + display->getWidth() / 2, y + display->getHeight() - FONT_HEIGHT_SMALL - 2, statusLine);
+}
+
+void Screen::drawDbMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y)
+{
+    auto *self = static_cast<Screen *>(state->userData);
+    display->setTextAlignment(TEXT_ALIGN_CENTER);
+    display->setFont(FONT_MEDIUM);
+    display->drawString(x + display->getWidth() / 2, y, "DB METER");
+
+    if (!self->dbMeterAvailable) {
+        display->setFont(FONT_SMALL);
+        display->drawString(x + display->getWidth() / 2,
+                            y + display->getHeight() / 2 - FONT_HEIGHT_SMALL,
+                            "Mic unavailable on this board");
+        return;
+    }
+
+    self->updateDbMeterReading();
+
+    display->setFont(FONT_LARGE);
+    char line[24];
+    snprintf(line, sizeof(line), "%.1f dBFS", static_cast<double>(self->dbMeterDbfs));
+    display->drawString(x + display->getWidth() / 2, y + (display->getHeight() / 2) - FONT_HEIGHT_LARGE, line);
+
+    // Bar graph
+    display->setFont(FONT_SMALL);
+    constexpr float minDb = -60.0f;
+    constexpr float maxDb = 0.0f;
+    float clamped = std::min(std::max(self->dbMeterDbfs, minDb), maxDb);
+    int16_t barWidth = display->getWidth() - 20;
+    int16_t filled = static_cast<int16_t>((clamped - minDb) / (maxDb - minDb) * barWidth);
+    int16_t barX = x + 10;
+    int16_t barY = y + display->getHeight() - 20;
+    display->drawRect(barX, barY, barWidth, 10);
+    if (filled > 0)
+        display->fillRect(barX, barY + 1, filled, 8);
+
+    int16_t statusY = barY - FONT_HEIGHT_SMALL - 2;
+    int16_t minMaxY = statusY - FONT_HEIGHT_SMALL - 2;
+    if (self->dbMeterMinMaxReady) {
+        char minmax[40];
+        snprintf(minmax, sizeof(minmax), "min %.1f  max %.1f", self->dbMeterMinDbfs, self->dbMeterMaxDbfs);
+        display->drawString(x + display->getWidth() / 2, minMaxY, minmax);
+    }
+
+    if (!self->dbMeterStatus.empty()) {
+        display->drawString(x + display->getWidth() / 2, statusY, self->dbMeterStatus.c_str());
+    } else {
+        uint32_t ageMs = millis() - self->dbMeterLastUpdateMs;
+        char status[32];
+        snprintf(status, sizeof(status), "Updated %lums ago", static_cast<unsigned long>(ageMs));
+        display->drawString(x + display->getWidth() / 2, statusY, status);
+    }
 }
 
 void Screen::drawHorizontalSegment(OLEDDisplay *display, int x, int y, int width, int height)
@@ -1854,6 +1919,10 @@ Screen::Screen(ScanI2C::DeviceAddress address, meshtastic_Config_DisplayConfig_O
 
     ui = new OLEDDisplayUi(dispdev);
     cmdQueue.setReader(this);
+
+#if defined(T_WATCH_S3)
+    dbMeterAvailable = true;
+#endif
 }
 
 Screen::~Screen()
@@ -2381,6 +2450,11 @@ void Screen::drawSecretMenuFrame(OLEDDisplay *display, OLEDDisplayUiState *state
 
     if (self->secretMenuMode == SecretMenuMode::ToneGenerator) {
         self->drawToneGeneratorFrame(display, state, x, y);
+        return;
+    }
+
+    if (self->secretMenuMode == SecretMenuMode::DbMeter) {
+        self->drawDbMeterFrame(display, state, x, y);
         return;
     }
 
@@ -3902,6 +3976,8 @@ void Screen::hideSecretMenu()
         stopToneGeneratorMode();
     if (secretMenuMode == SecretMenuMode::MsdCalculator)
         stopMsdCalculatorMode();
+    if (secretMenuMode == SecretMenuMode::DbMeter)
+        stopDbMeterMode();
     secretMenuMode = SecretMenuMode::Root;
     wifiAttackSelection = 0;
     wifiScanInProgress = false;
@@ -3941,6 +4017,10 @@ void Screen::handleSecretMenuSelection()
             setFrames(FOCUS_SECRET);
         } else if (secretMenuSelection == toneGeneratorMenuIndex) {
             startToneGeneratorMode();
+            setFastFramerate();
+            setFrames(FOCUS_SECRET);
+        } else if (secretMenuSelection == dbMeterMenuIndex) {
+            startDbMeterMode();
             setFastFramerate();
             setFrames(FOCUS_SECRET);
         } else if (secretMenuSelection == msdCalculatorMenuIndex) {
@@ -4054,6 +4134,118 @@ void Screen::stopToneGeneratorMode()
 {
     stopTonePlayback();
     toneGeneratorActive = false;
+    secretMenuMode = SecretMenuMode::Root;
+}
+
+void Screen::updateDbMeterReading()
+{
+#if defined(ARCH_ESP32) && (dbMicClkPin >= 0) && (dbMicDataPin >= 0)
+    if (!dbMeterActive)
+        return;
+
+    static int16_t samples[256];
+    size_t bytesRead = 0;
+    esp_err_t err = i2s_read(I2S_NUM_0, samples, sizeof(samples), &bytesRead, 5 / portTICK_PERIOD_MS);
+    if (err != ESP_OK || bytesRead == 0) {
+        dbMeterStatus = "Mic read error";
+        return;
+    }
+
+    const size_t count = bytesRead / sizeof(int16_t);
+    double accum = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+        double s = samples[i];
+        accum += s * s;
+    }
+    double rms = sqrt(accum / static_cast<double>(count));
+    double norm = rms / 32768.0;
+    if (norm < 1e-9)
+        norm = 1e-9;
+    dbMeterDbfs = static_cast<float>(20.0 * log10(norm));
+    dbMeterLastUpdateMs = millis();
+    dbMeterStatus.clear();
+    if (!dbMeterMinMaxReady) {
+        dbMeterMinDbfs = dbMeterDbfs;
+        dbMeterMaxDbfs = dbMeterDbfs;
+        dbMeterMinMaxReady = true;
+    } else {
+        dbMeterMinDbfs = std::min(dbMeterMinDbfs, dbMeterDbfs);
+        dbMeterMaxDbfs = std::max(dbMeterMaxDbfs, dbMeterDbfs);
+    }
+#endif
+}
+
+void Screen::startDbMeterMode()
+{
+    if (detonateModeActive)
+        exitDetonateMode();
+    if (battMeterActive)
+        stopBattMeterMode();
+    if (toneGeneratorActive)
+        stopToneGeneratorMode();
+
+    dbMeterMinMaxReady = false;
+    dbMeterMinDbfs = dbMeterMaxDbfs = dbMeterDbfs = -90.0f;
+    dbMeterStatus = "Listening...";
+
+#if defined(ARCH_ESP32) && (dbMicClkPin >= 0) && (dbMicDataPin >= 0)
+    i2s_config_t cfg = {};
+    cfg.mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM);
+    cfg.sample_rate = 16000;
+    cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+    cfg.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+    cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+    cfg.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+    cfg.dma_buf_count = 4;
+    cfg.dma_buf_len = 256;
+    cfg.use_apll = false;
+    cfg.tx_desc_auto_clear = false;
+    cfg.fixed_mclk = 0;
+
+    i2s_pin_config_t pins = {};
+    pins.bck_io_num = I2S_PIN_NO_CHANGE;
+    pins.ws_io_num = dbMicClkPin;
+    pins.data_out_num = I2S_PIN_NO_CHANGE;
+    pins.data_in_num = dbMicDataPin;
+
+    if (dbMeterActive)
+        i2s_driver_uninstall(I2S_NUM_0);
+
+    if (i2s_driver_install(I2S_NUM_0, &cfg, 0, nullptr) != ESP_OK) {
+        dbMeterStatus = "Mic init failed";
+        dbMeterActive = false;
+        secretMenuMode = SecretMenuMode::DbMeter;
+        setFrames(FOCUS_SECRET);
+        return;
+    }
+    if (i2s_set_pin(I2S_NUM_0, &pins) != ESP_OK || i2s_set_clk(I2S_NUM_0, 16000, I2S_BITS_PER_SAMPLE_16BIT, I2S_CHANNEL_MONO) != ESP_OK) {
+        dbMeterStatus = "Mic pin/clks failed";
+        i2s_driver_uninstall(I2S_NUM_0);
+        dbMeterActive = false;
+        secretMenuMode = SecretMenuMode::DbMeter;
+        setFrames(FOCUS_SECRET);
+        return;
+    }
+    dbMeterActive = true;
+    dbMeterStatus.clear();
+    dbMeterDbfs = -90.0f;
+    dbMeterLastUpdateMs = millis();
+    secretMenuMode = SecretMenuMode::DbMeter;
+    setFrames(FOCUS_SECRET);
+#else
+    dbMeterStatus = "Mic unavailable";
+    secretMenuMode = SecretMenuMode::DbMeter;
+    setFrames(FOCUS_SECRET);
+#endif
+}
+
+void Screen::stopDbMeterMode()
+{
+#if defined(ARCH_ESP32)
+    if (dbMeterActive)
+        i2s_driver_uninstall(I2S_NUM_0);
+#endif
+    dbMeterActive = false;
     secretMenuMode = SecretMenuMode::Root;
 }
 
@@ -4458,6 +4650,26 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         }
     };
 
+    auto handleDbMeterNav = [this](char inputEvent) -> bool {
+        switch (inputEvent) {
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_LEFT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_RIGHT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_BACK):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_CANCEL):
+            stopDbMeterMode();
+            hideSecretMenu();
+            setFastFramerate();
+            return true;
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_SELECT):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_UP):
+        case static_cast<char>(meshtastic_ModuleConfig_CannedMessageConfig_InputEventChar_DOWN):
+            setFastFramerate();
+            return true;
+        default:
+            return true;
+        }
+    };
+
     auto handleToneGeneratorNav = [this](char inputEvent) -> bool {
         auto clampFreq = [](int freq) {
             if (freq < 50)
@@ -4508,6 +4720,8 @@ bool Screen::handleSecretMenuInput(char inputEvent)
         return handleStationStaNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::Detonate)
         return handleDetonateNav(inputEvent);
+    if (secretMenuMode == SecretMenuMode::DbMeter)
+        return handleDbMeterNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::ToneGenerator)
         return handleToneGeneratorNav(inputEvent);
     if (secretMenuMode == SecretMenuMode::MsdCalculator) {

@@ -656,6 +656,7 @@ class Screen : public concurrency::OSThread
     static void drawMsdStatusFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     static void drawBattMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
     static void drawToneGeneratorFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
+    static void drawDbMeterFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
 
 #if defined(DISPLAY_CLOCK_FRAME)
     static void drawAnalogClockFrame(OLEDDisplay *display, OLEDDisplayUiState *state, int16_t x, int16_t y);
@@ -706,6 +707,9 @@ class Screen : public concurrency::OSThread
       void stopBattMeterMode();
       void startToneGeneratorMode();
       void stopToneGeneratorMode();
+      void startDbMeterMode();
+      void stopDbMeterMode();
+      void updateDbMeterReading();
       void startMsdCalculatorMode();
       void stopMsdCalculatorMode();
       void toggleTonePlayback();
@@ -731,6 +735,7 @@ class Screen : public concurrency::OSThread
           StationStations,
           Detonate,
           ToneGenerator,
+          DbMeter,
           MsdCalculator
       };
       SecretMenuMode secretMenuMode = SecretMenuMode::Root;
@@ -745,6 +750,14 @@ class Screen : public concurrency::OSThread
     bool toneGeneratorActive = false;
     bool toneGeneratorPlaying = false;
     uint32_t toneGeneratorFrequencyHz = 2600;
+    bool dbMeterActive = false;
+    bool dbMeterAvailable = false;
+    bool dbMeterMinMaxReady = false;
+    float dbMeterDbfs = -90.0f;
+    float dbMeterMinDbfs = -90.0f;
+    float dbMeterMaxDbfs = -90.0f;
+    uint32_t dbMeterLastUpdateMs = 0;
+    std::string dbMeterStatus = "";
     MsdCalculatorServer msdCalculatorServer;
     bool msdSummaryActive = false;
 
